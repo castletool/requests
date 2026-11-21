@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithCustomToken, onAuthStateChanged, signOut } from "firebase/auth";
-import { getFirestore, collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, orderBy, where, limit, serverTimestamp, getAggregateFromServer, sum } from "firebase/firestore";
+import { getFirestore, collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, orderBy, where, limit, serverTimestamp, getAggregateFromServer, getCountFromServer, count, sum } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 export { collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, orderBy, where, limit, serverTimestamp, signOut };
@@ -49,7 +49,12 @@ export async function getUser(id: string) {
   return ucache.get(id);
 }
 export const forget = (id: string) => ucache.delete(id);
-export const score = async (id: string) => { try { return (await getAggregateFromServer(collection(db, "posts", id, "votes"), { s: sum("score") })).data().s || 0; } catch { return 0; } };
+export const stats = async (id: string) => {
+  try {
+    const [v, c] = await Promise.all([getAggregateFromServer(collection(db, "posts", id, "votes"), { s: sum("score"), n: count() }), getCountFromServer(collection(db, "posts", id, "comments"))]);
+    return { s: v.data().s || 0, vn: v.data().n || 0, cn: c.data().count || 0 };
+  } catch { return { s: 0, vn: 0, cn: 0 }; }
+};
 export const myVote = async (id: string, uid?: string) => { try { return uid ? ((await getDoc(doc(db, "posts", id, "votes", uid))).data() || {}).score || 0 : 0; } catch { return 0; } };
 
 /** Public Castle profile bits; best effort (null if Castle refuses an unauthenticated lookup). */

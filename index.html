@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Castletool Help</title>
+<style>
+:root{--bg:#000;--fg:#fff;--mn:#888;--sep:#444}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+#app{max-width:720px;margin:0 auto;padding:12px 14px 80px}
+a{color:var(--fg)}
+.mn{color:var(--mn);font-size:13px}
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:6px 0 12px}
+.bar h1{font-size:20px;margin:0;cursor:pointer}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button,select,input,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--sep);border-radius:10px;padding:7px 12px}
+button{cursor:pointer}
+button.on,button.pri{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+button:disabled{opacity:.4}
+input,textarea,select{width:100%}
+select{width:auto}
+textarea{min-height:110px;resize:vertical}
+.card{display:flex;gap:12px;border-top:1px solid var(--sep);padding:12px 0}
+.vt{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:44px}
+.vt button{padding:0 8px;line-height:24px}
+.main{flex:1;min-width:0}
+.ttl{font-weight:600;cursor:pointer;word-wrap:break-word}
+.pill{display:inline-block;border:1px solid;border-radius:99px;padding:0 8px;font-size:12px;margin-right:6px}
+.nm{font-weight:600}.ic{display:inline-flex;vertical-align:-2px;margin-left:3px}
+.desc{white-space:pre-wrap;word-wrap:break-word;margin:10px 0}
+.cm{border-top:1px solid var(--sep);padding:10px 0}
+.cm p{margin:4px 0;white-space:pre-wrap;word-wrap:break-word}
+.gap>*{margin-top:10px}
+.ban{border:1px solid #F87171;color:#F87171;border-radius:10px;padding:8px 12px;margin-bottom:10px}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 16px;border-radius:99px;display:none;max-width:90%}
+</style></head>
+<body><div id="app"></div><div id="toast"></div>
+<script type="module">
+import{initializeApp}from"https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import{getAuth,signInWithCustomToken,onAuthStateChanged,signOut}from"https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import{getFirestore,collection,doc,getDoc,getDocs,addDoc,setDoc,updateDoc,deleteDoc,query,orderBy,limit,serverTimestamp,getAggregateFromServer,sum}from"https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const app=initializeApp({apiKey:"AIzaSyCq0GAXA9rae8_xuO4UHfn3Mr8Td7dxDnE",authDomain:"castletool-70b7f.firebaseapp.com",projectId:"castletool-70b7f",storageBucket:"castletool-70b7f.firebasestorage.app",messagingSenderId:"821509247017",appId:"1:821509247017:web:0444605f9f1128ebde8c38"});
+const auth=getAuth(app),db=getFirestore(app),root=document.getElementById("app");
+
+// all user text goes through append()/textContent, never innerHTML
+const h=(t,p={},...k)=>{const e=document.createElement(t);for(const[a,v]of Object.entries(p)){if(a==="class")e.className=v;else if(a.startsWith("on"))e.addEventListener(a.slice(2),v);else if(a==="style")e.style.cssText=v;else if(v!==false&&v!=null)e.setAttribute(a,v===true?"":v)}for(const c of k.flat())if(c!=null&&c!==false)e.append(c);return e};
+const svg=d=>`<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round">${d}</svg>`;
+const ROLE={default:{c:"#fff",i:""},verified:{c:"#FFD24A",i:'<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5L20 7"/></svg>'},moderator:{c:"#4ADE80",i:svg('<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>')},owner:{c:"#AA81FF",i:svg('<path d="M12 2l3 7 7 .6-5.3 4.7 1.7 7.2-6.4-3.7-6.4 3.7 1.7-7.2L2 9.6 9 9z"/>')}};
+const TYPES=["Feature","Change","Visual Bug","Functional Bug"];
+const STATUS={"Unplanned":"#888","Intended Feature":"#4ADE80","Low Priority":"#FACC15","High Priority":"#FB923C","Highest Priority":"#F87171","Complete":"#fff"};
+
+let me=null,filter="All",sort="top",timer=null;
+const ucache=new Map();
+const getUser=async id=>{if(!ucache.has(id)){const s=await getDoc(doc(db,"users",id));ucache.set(id,s.exists()?s.data():{username:"unknown",role:"default"})}return ucache.get(id)};
+const nameEl=u=>{const r=ROLE[u.role]||ROLE.default,s=h("span",{class:"nm",style:"color:"+r.c},u.username);if(r.i){const i=h("span",{class:"ic"});i.innerHTML=r.i;s.append(i)}return s};
+const ago=t=>{if(!t)return"now";const s=Math.max(0,(Date.now()-t.toMillis())/1000);return s<60?"just now":s<3600?Math.floor(s/60)+"m ago":s<86400?Math.floor(s/3600)+"h ago":Math.floor(s/86400)+"d ago"};
+const toast=m=>{const t=document.getElementById("toast");t.textContent=m;t.style.display="block";clearTimeout(t._t);t._t=setTimeout(()=>t.style.display="none",3500)};
+const err=e=>e.code==="permission-denied"?"Not allowed (signed out, blocked, or suspended).":e.message;
+const isMod=()=>me&&(me.role==="moderator"||me.role==="owner"),isOwner=()=>me&&me.role==="owner";
+const susp=()=>me&&me.suspendedUntil>Date.now();
+const canAct=()=>{if(!me){toast("Sign in via the \u201cNeed help?\u201d link in Castletool.");return false}if(susp()){toast("Your account is suspended.");return false}return true};
+const fmt=ms=>{const s=Math.ceil(ms/1000),d=Math.floor(s/86400),hr=Math.floor(s%86400/3600),m=Math.floor(s%3600/60),sc=s%60;return(d?d+"d ":"")+(d||hr?hr+"h ":"")+m+"m "+sc+"s"};
+
+// sign-in: #signin=<firebase token> from Castletool; removed from the address bar immediately
+const tok=(location.hash.match(/^#signin=(.+)$/)||[])[1];
+if(tok){history.replaceState(null,"",location.pathname+location.search);signInWithCustomToken(auth,tok).catch(()=>toast("Sign-in failed. Try the link in Castletool again."))}
+onAuthStateChanged(auth,()=>route());
+addEventListener("hashchange",()=>route());
+
+const loadMe=async()=>{const u=auth.currentUser;me=null;if(!u)return;try{const s=await getDoc(doc(db,"users",u.uid));if(s.exists()){me={uid:u.uid,...s.data()};ucache.set(u.uid,s.data())}}catch{}};
+
+function top(){
+  clearInterval(timer);
+  const b=h("div",{class:"bar"},h("h1",{onclick:()=>location.hash=""},"Castletool Help"),
+    h("div",{class:"row"},
+      me?nameEl(me):h("span",{class:"mn"},auth.currentUser?"Loading\u2026":"Not signed in"),
+      me&&h("button",{class:"pri",onclick:()=>location.hash="#new"},"New request"),
+      me&&["default","verified"].includes(me.role)&&h("button",{onclick:()=>location.hash="#apply"},"Apply: moderator"),
+      me&&h("button",{onclick:()=>signOut(auth)},"Sign out")));
+  const w=h("div",{},b);
+  if(susp()){const c=h("span",{},fmt(me.suspendedUntil-Date.now()));w.append(h("div",{class:"ban"},"Suspended. Time left: ",c));timer=setInterval(()=>{const l=me.suspendedUntil-Date.now();l<=0?route():c.textContent=fmt(l)},1000)}
+  return w;
+}
+
+async function route(){
+  await loadMe();
+  const v=location.hash,m=v.match(/^#p-(\w+)$/);
+  root.replaceChildren(top());
+  try{
+    if(m)await postView(m[1]);else if(v==="#new")newView();else if(v==="#apply")applyView();else await listView();
+  }catch(e){root.append(h("p",{class:"mn"},"Couldn\u2019t load: "+err(e)))}
+}
+
+const score=async id=>{try{return(await getAggregateFromServer(collection(db,"posts",id,"votes"),{s:sum("score")})).data().s||0}catch{return 0}};
+const myVote=async id=>{try{return me?((await getDoc(doc(db,"posts",id,"votes",me.uid))).data()||{}).score||0:0}catch{return 0}};
+async function vote(id,dir,cur){
+  if(!canAct())return;const w=me.role==="default"?1:2,r=doc(db,"posts",id,"votes",me.uid);
+  try{Math.sign(cur)===dir?await deleteDoc(r):await setDoc(r,{score:dir*w})}catch(e){toast(err(e))}
+  route();
+}
+const voter=(id,s,mine)=>h("div",{class:"vt"},
+  h("button",{class:mine>0?"on":"",onclick:()=>vote(id,1,mine)},"\u25B2"),h("b",{},s),
+  h("button",{class:mine<0?"on":"",onclick:()=>vote(id,-1,mine)},"\u25BC"));
+const pill=(t,c)=>h("span",{class:"pill",style:"color:"+c+";border-color:"+c},t);
+
+async function listView(){
+  const bar=h("div",{class:"row",style:"margin-bottom:8px"},
+    ...["All",...TYPES].map(t=>h("button",{class:filter===t?"on":"",onclick:()=>{filter=t;route()}},t)),
+    h("select",{onchange:e=>{sort=e.target.value;route()}},h("option",{value:"top",selected:sort==="top"},"Top"),h("option",{value:"new",selected:sort==="new"},"Newest")));
+  root.append(bar);
+  const snap=await getDocs(query(collection(db,"posts"),orderBy("createdAt","desc"),limit(60)));
+  let ps=snap.docs.map(d=>({id:d.id,...d.data()})).filter(p=>(isMod()||!p.removed)&&(filter==="All"||p.type===filter));
+  const ext=await Promise.all(ps.map(async p=>({s:await score(p.id),m:await myVote(p.id),u:await getUser(p.authorId)})));
+  ps=ps.map((p,i)=>({...p,...ext[i]}));
+  if(sort==="top")ps.sort((a,b)=>b.s-a.s);
+  if(!ps.length)root.append(h("p",{class:"mn"},"No requests yet."));
+  for(const p of ps)root.append(h("div",{class:"card",style:p.removed?"opacity:.45":""},voter(p.id,p.s,p.m),
+    h("div",{class:"main"},h("div",{class:"ttl",onclick:()=>location.hash="#p-"+p.id},p.removed?"[removed] "+p.title:p.title),
+      h("div",{class:"mn"},pill(p.type,"#888"),p.status&&pill(p.status,STATUS[p.status]||"#888"),nameEl(p.u)," \u00B7 "+ago(p.createdAt)))));
+}
+
+function newView(){
+  if(!me)return root.append(h("p",{class:"mn"},"Sign in via the \u201cNeed help?\u201d link in Castletool to post."));
+  const ty=h("select",{},TYPES.map(t=>h("option",{},t))),ti=h("input",{maxlength:100,placeholder:"Title"}),de=h("textarea",{maxlength:2000,placeholder:"Describe it"});
+  const go=h("button",{class:"pri",onclick:async()=>{
+    if(!canAct())return;if(!ti.value.trim()||!de.value.trim())return toast("Add a title and description.");
+    go.disabled=true;
+    try{const r=await addDoc(collection(db,"posts"),{authorId:me.uid,authorName:me.username,type:ty.value,title:ti.value.trim(),description:de.value.trim(),status:null,removed:false,createdAt:serverTimestamp()});location.hash="#p-"+r.id}
+    catch(e){toast(err(e));go.disabled=false}}},"Post");
+  root.append(h("div",{class:"gap"},h("h2",{},"New request"),ty,ti,de,h("div",{class:"row"},go,h("button",{onclick:()=>location.hash=""},"Cancel"))));
+}
+
+function applyView(){
+  if(!me)return;const t=h("textarea",{maxlength:1500,placeholder:"Why would you be a good moderator?"});
+  const go=h("button",{class:"pri",onclick:async()=>{
+    if(!canAct()||!t.value.trim())return;
+    try{await setDoc(doc(db,"modApplications",me.uid),{text:t.value.trim(),status:"pending",createdAt:serverTimestamp()});toast("Application sent.");location.hash=""}
+    catch(e){toast(e.code==="permission-denied"?"You already applied, or can\u2019t apply right now.":err(e))}}},"Send");
+  root.append(h("div",{class:"gap"},h("h2",{},"Moderator application"),t,h("div",{class:"row"},go,h("button",{onclick:()=>location.hash=""},"Cancel"))));
+}
+
+const SUSP=[["Suspend\u2026",-1],["1 hour",36e5],["1 day",864e5],["7 days",6048e5],["30 days",2592e6],["Lift suspension",0]];
+const suspender=(uid,u)=>isMod()&&me.uid!==uid&&["default","verified"].includes(u.role)&&h("select",{onchange:async e=>{const v=+e.target.value;if(v<0)return;
+  try{await updateDoc(doc(db,"users",uid),{suspendedUntil:v?Date.now()+v:0});ucache.delete(uid);toast("Updated.")}catch(x){toast(err(x))}e.target.selectedIndex=0}},SUSP.map(([l,v])=>h("option",{value:v},l)));
+
+async function postView(id){
+  const s=await getDoc(doc(db,"posts",id));
+  if(!s.exists()||(s.data().removed&&!isMod()))return root.append(h("p",{class:"mn"},"Request not found."));
+  const p={id,...s.data()},[sc,mine,au]=await Promise.all([score(id),myVote(id),getUser(p.authorId)]);
+  const rm=(ref,val)=>isMod()&&h("button",{onclick:async()=>{try{await updateDoc(ref,{removed:val});route()}catch(e){toast(err(e))}}},val?"Remove":"Restore");
+  const st=isOwner()&&h("select",{onchange:async e=>{try{await updateDoc(s.ref,{status:e.target.value||null});route()}catch(x){toast(err(x))}}},
+    h("option",{value:""},"No status"),Object.keys(STATUS).map(k=>h("option",{value:k,selected:p.status===k},k)));
+  root.append(h("div",{class:"card",style:"border-top:0"},voter(id,sc,mine),h("div",{class:"main"},
+    h("div",{class:"ttl",style:"cursor:default;font-size:18px"},p.removed?"[removed] "+p.title:p.title),
+    h("div",{class:"mn"},pill(p.type,"#888"),p.status&&pill(p.status,STATUS[p.status]||"#888"),nameEl(au)," \u00B7 "+ago(p.createdAt)),
+    h("div",{class:"desc"},p.description),
+    h("div",{class:"row"},st,rm(s.ref,!p.removed),suspender(p.authorId,au)))));
+  const cs=await getDocs(query(collection(db,"posts",id,"comments"),orderBy("createdAt","asc")));
+  root.append(h("div",{class:"mn",style:"margin:8px 0 0"},cs.size+" comment"+(cs.size===1?"":"s")));
+  for(const c of cs.docs){const d=c.data();if(d.removed&&!isMod())continue;const u=await getUser(d.authorId);
+    root.append(h("div",{class:"cm",style:d.removed?"opacity:.45":""},h("div",{class:"mn"},nameEl(u)," \u00B7 "+ago(d.createdAt)),h("p",{},d.removed?"[removed] "+d.text:d.text),
+      h("div",{class:"row"},rm(c.ref,!d.removed),suspender(d.authorId,u))))}
+  if(me){const t=h("textarea",{maxlength:1000,placeholder:"Add a comment",style:"min-height:70px"});
+    const go=h("button",{class:"pri",onclick:async()=>{if(!canAct()||!t.value.trim())return;go.disabled=true;
+      try{await addDoc(collection(db,"posts",id,"comments"),{authorId:me.uid,authorName:me.username,text:t.value.trim(),removed:false,createdAt:serverTimestamp()});route()}
+      catch(e){toast(err(e));go.disabled=false}}},"Comment");
+    root.append(h("div",{class:"gap"},t,go))}
+  else root.append(h("p",{class:"mn"},"Sign in via the \u201cNeed help?\u201d link in Castletool to vote or comment."));
+}
+</script></body></html>

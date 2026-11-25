@@ -1,9 +1,9 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithCustomToken, onAuthStateChanged, signOut } from "firebase/auth";
-import { getFirestore, collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, orderBy, where, limit, serverTimestamp, getAggregateFromServer, getCountFromServer, count, sum } from "firebase/firestore";
+import { getFirestore, collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, orderBy, where, limit, serverTimestamp, getAggregateFromServer, getCountFromServer, count, sum, writeBatch, startAfter } from "firebase/firestore";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-export { collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, orderBy, where, limit, serverTimestamp, signOut };
+export { getCountFromServer, writeBatch, startAfter, collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, deleteDoc, query, orderBy, where, limit, serverTimestamp, signOut };
 
 const app = initializeApp({ apiKey: "AIzaSyCq0GAXA9rae8_xuO4UHfn3Mr8Td7dxDnE", authDomain: "castletool-70b7f.firebaseapp.com", projectId: "castletool-70b7f", storageBucket: "castletool-70b7f.firebasestorage.app", messagingSenderId: "821509247017", appId: "1:821509247017:web:0444605f9f1128ebde8c38" });
 export const auth = getAuth(app), db = getFirestore(app);
@@ -74,4 +74,24 @@ export async function login(u: string, p: string) {
   const b = await a.json();
   if (!b.firebaseToken) throw new Error("Sign-in failed. Try again later.");
   await signInWithCustomToken(auth, b.firebaseToken);
+}
+
+export const tag = (u: any) => `@${u.username} (${u.uid})`;
+export const dur = (ms: number) => { const m = Math.round(ms / 6e4); return m < 60 ? m + " min" : m < 1440 ? Math.round(m / 60) + " h" : Math.round(m / 1440) + " d"; };
+/** Adds an audit-log entry to a batch so it commits together with the action it describes. */
+export function audit(b: any, me: any, action: string, target: string, detail = "") {
+  b.set(doc(collection(db, "audit")), { actor: me.uid, actorName: me.username, action, target: target.slice(0, 120), detail: detail.slice(0, 250), createdAt: serverTimestamp() });
+}
+export const limitDoc = (uid: string, kind: string) => doc(db, "limits", kind + "-" + uid);
+/** Seconds until this user may post / comment again (rules enforce 60s for posts, 15s for comments). */
+export async function waitLeft(uid: string, kind: "post" | "comment") {
+  try { const t = (await getDoc(limitDoc(uid, kind))).data()?.t?.toMillis?.(); return t ? Math.max(0, Math.ceil((t + (kind === "post" ? 60e3 : 15e3) - Date.now()) / 1000)) : 0; } catch { return 0; }
+}
+/** Castle account creation time (ms), best effort. */
+export async function castleCreated(id: string): Promise<number | null> {
+  try {
+    const r = await fetch("https://api.castle.xyz/graphql", { method: "POST", headers: CH, body: JSON.stringify({ query: "query($id:ID!){user(userId:$id){createdTime}}", variables: { id } }) });
+    const v = (await r.json())?.data?.user?.createdTime; if (v == null) return null;
+    const n = typeof v === "number" ? (v < 1e12 ? v * 1000 : v) : Date.parse(v); return isFinite(n) ? n : null;
+  } catch { return null; }
 }

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from "@/components/ui/dropdown-menu";
 import { Md } from "@/components/Md";
+import { GUIDELINES } from "@/lib/guidelines";
 import * as F from "@/lib/fb";
 import { MD } from "@/lib/mdicons";
 
@@ -37,50 +38,80 @@ function Pick({ text, value, options, onChange, className }: any) {
     <DropdownMenuContent align="end"><DropdownMenuRadioGroup value={value} onValueChange={onChange}>{options.map(([v, l]: any) => <DropdownMenuRadioItem key={v} value={v}>{l}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>;
 }
 
-// ── remove dialog (optional suspension at the same time) ───────────────
-let ask: (canSuspend: boolean, what: string) => Promise<{ reason: string; ms: number } | null> = async () => null;
+// ── dialogs and item actions ───────────────────────────────────────────
+type AskOpts = { title: string; placeholder?: string; initial?: string; action: string; danger?: boolean; field?: boolean; suspend?: boolean; max?: number };
+let ask: (o: AskOpts) => Promise<{ reason: string; ms: number } | null> = async () => null;
 function AskHost() {
   const [s, setS] = useState<any>(null), [v, setV] = useState(""), [ms, setMs] = useState(0);
-  useEffect(() => { ask = (canSuspend, what) => new Promise((r) => { setV(""); setMs(0); setS({ canSuspend, what, r }); }); }, []);
+  useEffect(() => { ask = (o) => new Promise((r) => { setV(o.initial || ""); setMs(0); setS({ o, r }); }); }, []);
   if (!s) return null;
-  const done = (x: any) => { s.r(x); setS(null); };
+  const o: AskOpts = s.o, f = o.field !== false, done = (x: any) => { s.r(x); setS(null); };
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/70 p-3 sm:items-center" onClick={() => done(null)}>
       <div className="w-full max-w-md space-y-3 rounded-2xl border border-border bg-black p-4" onClick={stop}>
-        <h3 className="text-lg font-medium">Remove this {s.what}?</h3>
-        <Textarea autoFocus value={v} maxLength={200} onChange={(e) => setV(e.target.value)} placeholder="Reason (shown to the author)" className="min-h-[90px]" />
-        {s.canSuspend && <label className="flex items-center justify-between gap-2 text-sm">Also suspend the author<select className={sel} value={ms} onChange={(e) => setMs(+e.target.value)}><option value={0}>No suspension</option>{SUSP.map(([l, x]) => <option key={l} value={x}>{l}</option>)}</select></label>}
-        <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => done(null)}>Cancel</Button><Button variant="destructive" disabled={!v.trim()} onClick={() => done({ reason: v.trim(), ms })}>Remove</Button></div>
+        <h3 className="text-lg font-medium">{o.title}</h3>
+        {f && <Textarea autoFocus value={v} maxLength={o.max || 200} onChange={(e) => setV(e.target.value)} placeholder={o.placeholder} className="min-h-[90px]" />}
+        {o.suspend && <label className="flex items-center justify-between gap-2 text-sm">Also suspend the author<select className={sel} value={ms} onChange={(e) => setMs(+e.target.value)}><option value={0}>No suspension</option>{SUSP.map(([l, x]) => <option key={l} value={x}>{l}</option>)}</select></label>}
+        <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => done(null)}>Cancel</Button><Button variant={o.danger ? "destructive" : undefined} disabled={f && !v.trim()} onClick={() => done({ reason: v.trim(), ms })}>{o.action}</Button></div>
       </div>
     </div>
   );
 }
 const canSusp = (me: any, u: any) => F.isMod(me) && u.uid !== me.uid && ["default", "verified"].includes(u.role);
-async function removeIt(ref: any, me: any, u: any, what: string, done: () => void) {
-  const can = canSusp(me, u), r = await ask(can, what); if (!r) return;
+const pid = (x: any) => x.ref.parent.parent.id;
+const tid = (x: any, kind: string) => kind === "comment" ? pid(x) + "/" + x.id : x.id;
+async function removeIt(x: any, kind: string, me: any, u: any, done: () => void) {
+  const can = canSusp(me, u), r = await ask({ title: `Remove this ${kind}?`, placeholder: "Reason (shown to the author)", action: "Remove", danger: true, suspend: can }); if (!r) return;
+  const b = F.writeBatch(F.db);
+  b.update(x.ref, { removed: true, removedReason: r.reason, removedAt: F.serverTimestamp(), removedBy: me.uid });
+  if (kind === "comment") b.set(F.doc(F.db, "removedComments", x.id), { postId: pid(x), authorId: u.uid, text: x.text, reason: r.reason, createdAt: F.serverTimestamp() });
+  F.audit(b, me, "removed", tid(x, kind), r.reason);
+  if (can && r.ms) { b.update(F.doc(F.db, "users", u.uid), { suspendedUntil: Date.now() + r.ms }); F.audit(b, me, "suspended", F.tag(u), "for " + F.dur(r.ms)); }
+  await b.commit(); F.forget(u.uid); done();
+}
+async function restoreIt(x: any, kind: string, me: any, done: () => void) {
   try {
-    await F.updateDoc(ref, { removed: true, removedReason: r.reason, removedAt: F.serverTimestamp(), removedBy: me.uid });
-    if (can && r.ms) { await F.updateDoc(F.doc(F.db, "users", u.uid), { suspendedUntil: Date.now() + r.ms }); F.forget(u.uid); }
-    done();
+    const b = F.writeBatch(F.db); b.update(x.ref, { removed: false });
+    if (kind === "comment") b.delete(F.doc(F.db, "removedComments", x.id));
+    F.audit(b, me, "restored", tid(x, kind)); await b.commit(); done();
   } catch (e) { toast.error(F.err(e)); }
 }
-const restoreIt = async (ref: any, done: () => void) => { try { await F.updateDoc(ref, { removed: false }); done(); } catch (e) { toast.error(F.err(e)); } };
-function ModBtn({ x, done }: any) {
+function ModBtn({ x, kind, done }: any) {
   const { me } = F.useMe();
-  return F.isMod(me) && x.removed ? <Button variant="outline" className="!px-3 !py-1" onClick={() => restoreIt(x.ref, done)}>Restore</Button> : null;
+  return F.isMod(me) && x.removed ? <Button variant="outline" className="!px-3 !py-1" onClick={() => restoreIt(x, kind, me, done)}>Restore</Button> : null;
 }
-function ModMenu({ x, u, kind, done }: any) {
+function ItemMenu({ x, u, kind, done }: any) {
   const { me } = F.useMe();
-  if (!F.isMod(me)) return null;
-  const susp = async (ms: number) => { try { await F.updateDoc(F.doc(F.db, "users", u.uid), { suspendedUntil: ms ? Date.now() + ms : 0 }); F.forget(u.uid); toast("Updated."); done(); } catch (e) { toast.error(F.err(e)); } };
+  if (!me) return null;
+  const mod = F.isMod(me), mine = me.uid === u.uid, gone = x.removed || x.deleted, t = tid(x, kind);
+  if (gone && !mod) return null;
+  const run = (f: () => Promise<void>) => setTimeout(() => f().catch((e) => toast.error(F.err(e))), 60);
+  const edit = () => kind === "request" ? go("#e-" + x.id) : run(async () => {
+    const r = await ask({ title: "Edit comment", initial: x.text, max: 1000, action: "Save" }); if (!r) return;
+    const b = F.writeBatch(F.db); b.update(x.ref, { text: r.reason, editedAt: F.serverTimestamp() }); F.audit(b, me, "edited", t); await b.commit(); done();
+  });
+  const del = () => run(async () => {
+    const r = await ask({ title: `Delete this ${kind}?`, field: false, danger: true, action: "Delete" }); if (!r) return;
+    const b = F.writeBatch(F.db); b.update(x.ref, { deleted: true, deletedAt: F.serverTimestamp() }); F.audit(b, me, "deleted", t); await b.commit(); done();
+  });
+  const report = () => run(async () => {
+    const r = await ask({ title: `Report this ${kind}`, placeholder: "What's wrong? Moderators will review it.", max: 300, action: "Report" }); if (!r) return;
+    const b = F.writeBatch(F.db);
+    b.set(F.doc(F.db, "reports", me.uid + "_" + x.id), { reporterId: me.uid, reporterName: me.username, kind: kind === "comment" ? "comment" : "post", postId: kind === "comment" ? pid(x) : x.id, targetId: x.id, targetAuthorId: u.uid, reason: r.reason, status: "open", createdAt: F.serverTimestamp() });
+    F.audit(b, me, "reported", t, r.reason);
+    try { await b.commit(); toast("Report sent. Thanks."); } catch (e: any) { toast.error(e.code === "permission-denied" ? "You already reported this, or can't report right now." : F.err(e)); }
+  });
+  const lock = () => run(async () => { const b = F.writeBatch(F.db); b.update(x.ref, { locked: !x.locked }); F.audit(b, me, x.locked ? "unlocked" : "locked", x.id); await b.commit(); done(); });
   return (
-    <DropdownMenu><DropdownMenuTrigger className="rounded-full p-1 hover:bg-accent" aria-label="Moderator actions"><Ic n="more_vert" s={22} /></DropdownMenuTrigger>
+    <DropdownMenu><DropdownMenuTrigger className="rounded-full p-1 hover:bg-accent" aria-label="More actions"><Ic n="more_vert" s={22} /></DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {x.removed ? <DropdownMenuItem onSelect={() => restoreIt(x.ref, done)}>Restore</DropdownMenuItem>
-          : <DropdownMenuItem className="text-[#F87171]" onSelect={() => setTimeout(() => removeIt(x.ref, me, u, kind, done), 60)}>Remove…</DropdownMenuItem>}
-        {canSusp(me, u) && <DropdownMenuSub><DropdownMenuSubTrigger>Suspend author</DropdownMenuSubTrigger><DropdownMenuSubContent>
-          {[...SUSP, ["Lift suspension", 0] as [string, number]].map(([l, v]) => <DropdownMenuItem key={l} onSelect={() => susp(v)}>{l}</DropdownMenuItem>)}</DropdownMenuSubContent></DropdownMenuSub>}
-        <DropdownMenuItem onSelect={() => go("#u-" + u.uid)}>View profile</DropdownMenuItem>
+        {mine && !gone && !(x.locked && kind === "request") && <DropdownMenuItem onSelect={edit}>Edit</DropdownMenuItem>}
+        {mine && !gone && <DropdownMenuItem className="text-[#F87171]" onSelect={del}>Delete</DropdownMenuItem>}
+        {!mine && !gone && <DropdownMenuItem onSelect={report}>Report…</DropdownMenuItem>}
+        {mod && kind === "request" && !gone && <DropdownMenuItem onSelect={lock}>{x.locked ? "Unlock comments" : "Lock comments"}</DropdownMenuItem>}
+        {mod && !x.deleted && (x.removed ? <DropdownMenuItem onSelect={() => run(() => restoreIt(x, kind, me, done))}>Restore</DropdownMenuItem>
+          : <DropdownMenuItem className="text-[#F87171]" onSelect={() => run(() => removeIt(x, kind, me, u, done))}>Remove…</DropdownMenuItem>)}
+        {mod && !mine && <DropdownMenuItem onSelect={() => go("#u-" + u.uid)}>Manage account</DropdownMenuItem>}
       </DropdownMenuContent></DropdownMenu>
   );
 }
@@ -106,20 +137,26 @@ function PostCard({ p, reload, full }: any) {
   const { me } = F.useMe();
   const media = !!p.media?.length;
   return (
-    <div className={"border-t border-border px-3 py-3 " + (full ? "" : "cursor-pointer active:bg-secondary/60")} onClick={() => !full && go("#p-" + p.id)} style={{ opacity: p.removed ? 0.55 : 1 }}>
-      <div className="flex items-center gap-2 text-sm"><Avatar u={p.u} /><Name u={p.u} /><span className="text-muted-foreground">· {F.ago(p.createdAt)}</span>
+    <div className={"border-t border-border px-3 py-3 " + (full ? "" : "cursor-pointer active:bg-secondary/60")} onClick={() => !full && go("#p-" + p.id)} style={{ opacity: p.removed || p.deleted ? 0.55 : 1 }}>
+      <div className="flex items-center gap-2 text-sm"><Avatar u={p.u} /><Name u={p.u} /><span className="text-muted-foreground">· {F.ago(p.createdAt)}{p.editedAt ? " · edited" : ""}</span>
         <div className="ml-auto flex items-center gap-1" onClick={stop}>
-          {full && me?.role === "owner" && <Pick text={p.status || "Set status"} value={p.status || ""} options={[["", "No status"], ...Object.keys(F.STATUS).map((k) => [k, k])]}
-            onChange={async (v: string) => { try { await F.updateDoc(p.ref, { status: v || null, statusAt: F.serverTimestamp() }); reload(); } catch (e) { toast.error(F.err(e)); } }} />}
-          <ModMenu x={p} u={p.u} kind="request" done={reload} /></div></div>
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"><Badge t={p.type} />{p.status && <Chip status={p.status} />}</div>
-      <div className={"mt-1.5 break-words font-medium leading-snug " + (full ? "text-xl" : "text-lg")}>{p.removed ? "[removed] " : ""}{p.title}</div>
-      {full ? <Md text={p.description} /> : !media && <p className="mt-1 line-clamp-3 break-words text-sm text-muted-foreground">{p.description}</p>}
+          {full && me?.role === "owner" && !p.deleted && <Pick text={p.status || "Set status"} value={p.status || ""} options={[["", "No status"], ...Object.keys(F.STATUS).map((k) => [k, k])]}
+            onChange={async (v: string) => { try { const b = F.writeBatch(F.db); b.update(p.ref, { status: v || null, statusAt: F.serverTimestamp() }); F.audit(b, me, "set", p.id, "to " + (v || "No status")); await b.commit(); reload(); } catch (e) { toast.error(F.err(e)); } }} />}
+          <ItemMenu x={p} u={p.u} kind="request" done={reload} /></div></div>
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"><Badge t={p.type} />{p.locked && <Badge t="Locked" />}{p.status && <Chip status={p.status} />}</div>
+      <div className={"mt-1.5 break-words font-medium leading-snug " + (full ? "text-xl" : "text-lg")}>{p.deleted ? "[deleted]" : (p.removed ? "[removed] " : "") + p.title}</div>
+      {p.deleted ? <p className="mt-1 text-sm text-muted-foreground">Deleted by the author.</p> : full ? <Md text={p.description} /> : !media && <p className="mt-1 line-clamp-3 break-words text-sm text-muted-foreground">{p.description}</p>}
       <Reason x={p} />
       <div className="mt-2 flex items-center gap-3" onClick={stop}><Votes id={p.id} s={p.s} m={p.m} done={reload} />
         <span className="inline-flex items-center gap-1 text-sm text-muted-foreground"><Ic n="chat_bubble" s={18} />{p.cn}</span></div>
     </div>
   );
+}
+
+function useSentinel(cb: () => void, on: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (!on || !ref.current) return; const o = new IntersectionObserver((e) => { if (e[0].isIntersecting) cb(); }, { rootMargin: "500px" }); o.observe(ref.current); return () => o.disconnect(); });
+  return ref;
 }
 
 // ── search with slash commands ─────────────────────────────────────────
@@ -178,15 +215,22 @@ function Search({ q, setQ, mod }: any) {
 
 function Home({ q, setQ }: { q: string; setQ: (s: string) => void }) {
   const { me } = F.useMe();
-  const [all, setAll] = useState<any[] | null>(null), [t, setT] = useState(0);
-  useEffect(() => {
-    (async () => {
-      const snap = await F.getDocs(F.query(F.collection(F.db, "posts"), F.orderBy("createdAt", "desc"), F.limit(60)));
-      setAll(await hydrate(snap.docs.filter((d) => { const p: any = d.data(); return !p.removed || F.isMod(me) || p.authorId === me?.uid; }), me));
-    })().catch(() => setAll([]));
-  }, [t, me?.uid]);
+  const [all, setAll] = useState<any[]>([]), [cur, setCur] = useState<any>(null), [more, setMore] = useState(true), [busy, setBusy] = useState(true), [t, setT] = useState(0);
+  const PAGE = 20;
+  const load = async (reset: boolean, n = PAGE) => {
+    if (busy && !reset) return; setBusy(true);
+    try {
+      const cs: any[] = [F.orderBy("createdAt", "desc")]; if (!reset && cur) cs.push(F.startAfter(cur)); cs.push(F.limit(n));
+      const snap = await F.getDocs((F.query as any)(F.collection(F.db, "posts"), ...cs));
+      const items = await hydrate(snap.docs.filter((d) => { const p: any = d.data(); return !(p.removed || p.deleted) || F.isMod(me) || (p.authorId === me?.uid && !p.deleted); }), me);
+      setAll((a) => reset ? items : [...a, ...items]); setCur(snap.docs[snap.docs.length - 1] || null); setMore(snap.docs.length === n);
+    } catch { setMore(false); }
+    setBusy(false);
+  };
+  useEffect(() => { load(true, Math.max(PAGE, all.length)); }, [t, me?.uid]);
+  const sent = useSentinel(() => load(false), more && !busy);
   const f = parse(q.startsWith("@") ? "" : q, F.isMod(me));
-  let ps = all || [];
+  let ps = all;
   if (f.inc.length) ps = ps.filter((p) => f.inc.some((k) => FILTERS[k](p)));
   if (f.exc.length) ps = ps.filter((p) => !f.exc.some((k) => FILTERS[k](p)));
   if (f.text) ps = ps.filter((p) => (p.title + " " + p.description + " " + p.u.username).toLowerCase().includes(f.text));
@@ -195,7 +239,8 @@ function Home({ q, setQ }: { q: string; setQ: (s: string) => void }) {
     <div>
       <div className="sticky top-0 z-10 bg-black/95 px-3 pb-2 backdrop-blur" style={{ paddingTop: "calc(env(safe-area-inset-top) + 8px)" }}><Search q={q} setQ={setQ} mod={F.isMod(me)} /></div>
       <Susp />
-      {all === null ? <Empty icon="search" text="Loading…" /> : !ps.length ? <Empty icon="search" text={q ? "No matches." : "No requests yet."} /> : ps.map((p) => <PostCard key={p.id} p={p} reload={() => setT((x) => x + 1)} />)}
+      {!ps.length && !busy && !more ? <Empty icon="search" text={q ? "No matches." : "No requests yet."} /> : ps.map((p) => <PostCard key={p.id} p={p} reload={() => setT((x) => x + 1)} />)}
+      <div ref={sent} className="p-4 text-center text-sm text-muted-foreground">{busy ? "Loading…" : more ? "" : ps.length ? "You're all caught up." : ""}</div>
     </div>
   );
 }
@@ -208,31 +253,39 @@ function Post({ id }: { id: string }) {
     (async () => {
       const s = await F.getDoc(F.doc(F.db, "posts", id));
       if (!s.exists()) return setP(null);
-      const c = await F.getDocs(F.query(F.collection(F.db, "posts", id, "comments"), F.orderBy("createdAt", "asc")));
+      const c = await F.getDocs(F.query(F.collection(F.db, "posts", id, "comments"), F.orderBy("createdAt", "asc"), F.limit(200)));
       const cl = await Promise.all(c.docs.map(async (x) => ({ ref: x.ref, id: x.id, ...x.data(), u: await F.getUser((x.data() as any).authorId) })));
       setP((await hydrate([s], me))[0]); setCs(cl);
     })().catch(() => setP(null));
   }, [id, t, me?.uid]);
   if (p === undefined) return <Empty icon="search" text="Loading…" />;
-  if (!p || (p.removed && !F.isMod(me) && p.authorId !== me?.uid)) return <Empty icon="search" text="Request not found." />;
+  if (!p || ((p.removed || p.deleted) && !F.isMod(me) && (p.deleted || p.authorId !== me?.uid))) return <Empty icon="search" text="Request not found." />;
   const post = async () => {
-    if (!F.guard(me) || !text.trim()) return; setBusy(true);
-    try { await F.addDoc(F.collection(F.db, "posts", id, "comments"), { authorId: me.uid, authorName: me.username, text: text.trim(), removed: false, createdAt: F.serverTimestamp() }); setText(""); reload(); } catch (e) { toast.error(F.err(e)); }
+    if (!F.guard(me) || !text.trim()) return;
+    const w = await F.waitLeft(me.uid, "comment"); if (w > 0) return void toast(`Slow down. Try again in ${w}s.`);
+    setBusy(true);
+    try {
+      const cr = F.doc(F.collection(F.db, "posts", id, "comments")), b = F.writeBatch(F.db);
+      b.set(cr, { authorId: me.uid, authorName: me.username, text: text.trim(), removed: false, createdAt: F.serverTimestamp() });
+      b.set(F.limitDoc(me.uid, "comment"), { t: F.serverTimestamp() }); F.audit(b, me, "commented", id + "/" + cr.id);
+      await b.commit(); setText(""); reload();
+    } catch (e) { toast.error(F.err(e)); }
     setBusy(false);
   };
+  const locked = p.locked && !F.isMod(me);
   return (
     <div>
       <button onClick={() => history.length > 1 ? history.back() : go("")} className="flex items-center gap-1 px-3 py-3 text-sm text-muted-foreground" style={{ paddingTop: "calc(env(safe-area-inset-top) + 12px)" }}><Ic n="arrow_back" s={18} />Back</button>
       <PostCard p={p} reload={reload} full />
       <div className="border-t border-border px-3 py-2 text-sm text-muted-foreground">{cs.length} comment{cs.length === 1 ? "" : "s"}</div>
       {cs.filter((c) => !c.removed || F.isMod(me) || c.authorId === me?.uid).map((c) => (
-        <div key={c.id} className="border-t border-border px-3 py-3" style={{ opacity: c.removed ? 0.55 : 1 }}>
-          <div className="flex items-center gap-2 text-sm"><Avatar u={c.u} s={22} /><Name u={c.u} /><span className="text-muted-foreground">· {F.ago(c.createdAt)}</span><div className="ml-auto"><ModMenu x={c} u={c.u} kind="comment" done={reload} /></div></div>
-          <div className="mt-1">{c.removed ? <p>[removed]</p> : <Md text={c.text} />}</div><Reason x={c} />
+        <div key={c.id} className="border-t border-border px-3 py-3" style={{ opacity: c.removed || c.deleted ? 0.55 : 1 }}>
+          <div className="flex items-center gap-2 text-sm"><Avatar u={c.u} s={22} /><Name u={c.u} /><span className="text-muted-foreground">· {F.ago(c.createdAt)}{c.editedAt ? " · edited" : ""}</span><div className="ml-auto"><ItemMenu x={c} u={c.u} kind="comment" done={reload} /></div></div>
+          <div className="mt-1">{c.deleted ? <p className="text-muted-foreground">[deleted]</p> : c.removed ? <p>[removed]</p> : <Md text={c.text} />}</div><Reason x={c} />
         </div>))}
       <div className="space-y-2 border-t border-border p-3">
-        {me ? <><Textarea value={text} maxLength={1000} onChange={(e) => setText(e.target.value)} placeholder="Add a comment (markdown supported)" className="min-h-[70px]" /><Button disabled={busy} onClick={post}>Comment</Button></>
-          : <Button variant="outline" onClick={() => go("#login")}>Sign in to vote or comment</Button>}
+        {!me ? <Button variant="outline" onClick={() => go("#login")}>Sign in to vote or comment</Button> : p.deleted ? null : locked ? <p className="text-sm text-muted-foreground">This request is locked. New comments are turned off.</p> :
+          <><Textarea value={text} maxLength={1000} onChange={(e) => setText(e.target.value)} placeholder="Add a comment (markdown supported)" className="min-h-[70px]" /><Button disabled={busy} onClick={post}>Comment</Button></>}
       </div>
     </div>
   );
@@ -243,30 +296,80 @@ function NewPost() {
   const [type, setType] = useState(TYPES[0]), [title, setTitle] = useState(""), [desc, setDesc] = useState(""), [busy, setBusy] = useState(false);
   if (!me) return <Form title="New request"><Button onClick={() => go("#login")}>Sign in to post</Button></Form>;
   const submit = async () => {
-    if (!F.guard(me)) return; if (!title.trim() || !desc.trim()) return void toast("Add a title and description."); setBusy(true);
-    try { const r = await F.addDoc(F.collection(F.db, "posts"), { authorId: me.uid, authorName: me.username, type, title: title.trim(), description: desc.trim(), status: null, removed: false, createdAt: F.serverTimestamp() }); go("#p-" + r.id); } catch (e) { toast.error(F.err(e)); setBusy(false); }
+    if (!F.guard(me)) return; if (!title.trim() || !desc.trim()) return void toast("Add a title and description.");
+    const w = await F.waitLeft(me.uid, "post"); if (w > 0) return void toast(`Slow down. You can post again in ${w}s.`);
+    setBusy(true);
+    try {
+      const pr = F.doc(F.collection(F.db, "posts")), b = F.writeBatch(F.db);
+      b.set(pr, { authorId: me.uid, authorName: me.username, type, title: title.trim(), description: desc.trim(), status: null, removed: false, createdAt: F.serverTimestamp() });
+      b.set(F.limitDoc(me.uid, "post"), { t: F.serverTimestamp() }); F.audit(b, me, "posted", pr.id, title.trim());
+      await b.commit(); go("#p-" + pr.id);
+    } catch (e) { toast.error(F.err(e)); setBusy(false); }
   };
   return <Form title="New request">
     <div className="flex gap-2"><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} placeholder="Title" /><Pick text={type} value={type} options={TYPES.map((k) => [k, k])} onChange={setType} className="h-10" /></div>
     <Textarea value={desc} maxLength={2000} onChange={(e) => setDesc(e.target.value)} placeholder="Describe it. Markdown and links are supported." className="min-h-[180px]" />
     <Button disabled={busy} onClick={submit}>Post</Button>
+    <p className="text-xs text-muted-foreground">By posting you agree to the <a href="#rules" className="underline">community guidelines</a>.</p>
   </Form>;
 }
 
+function EditPost({ id }: { id: string }) {
+  const { me } = F.useMe();
+  const [p, setP] = useState<any>(undefined), [title, setTitle] = useState(""), [desc, setDesc] = useState(""), [busy, setBusy] = useState(false);
+  useEffect(() => { F.getDoc(F.doc(F.db, "posts", id)).then((s) => { const d: any = s.data(); setP(d ? { ref: s.ref, ...d } : null); if (d) { setTitle(d.title); setDesc(d.description); } }).catch(() => setP(null)); }, [id]);
+  if (p === undefined) return <Empty icon="search" text="Loading…" />;
+  if (!p || !me || p.authorId !== me.uid) return <Empty icon="search" text="You can't edit this request." />;
+  const save = async () => {
+    if (!F.guard(me) || !title.trim() || !desc.trim()) return; setBusy(true);
+    try { const b = F.writeBatch(F.db); b.update(p.ref, { title: title.trim(), description: desc.trim(), editedAt: F.serverTimestamp() }); F.audit(b, me, "edited", id); await b.commit(); go("#p-" + id); } catch (e) { toast.error(F.err(e)); setBusy(false); }
+  };
+  return <Form title="Edit request"><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} /><Textarea value={desc} maxLength={2000} onChange={(e) => setDesc(e.target.value)} className="min-h-[180px]" />
+    <div className="flex gap-2"><Button disabled={busy} onClick={save}>Save</Button><Button variant="outline" onClick={() => history.back()}>Cancel</Button></div></Form>;
+}
+
+function Rules() {
+  return <div className="px-3 pb-6" style={{ paddingTop: "calc(env(safe-area-inset-top) + 12px)" }}>
+    <button onClick={() => history.length > 1 ? history.back() : go("")} className="mb-2 flex items-center gap-1 text-sm text-muted-foreground"><Ic n="arrow_back" s={18} />Back</button>
+    <Md text={GUIDELINES} /></div>;
+}
+
 // ── profile + moderator tools ──────────────────────────────────────────
+function SuspendPanel({ u, done }: any) {
+  const { me } = F.useMe();
+  const [n, setN] = useState("1"), [unit, setUnit] = useState(864e5), [why, setWhy] = useState("");
+  const left = u.suspendedUntil - Date.now();
+  const apply = async () => {
+    const ms = Math.round(+n * unit);
+    if (!(ms >= 6e4) || ms > 365 * 864e5) return void toast("Pick a length between 1 minute and 365 days.");
+    try { const b = F.writeBatch(F.db); b.update(F.doc(F.db, "users", u.uid), { suspendedUntil: Date.now() + ms }); F.audit(b, me, "suspended", F.tag(u), `for ${F.dur(ms)}${why.trim() ? ": " + why.trim() : ""}`); await b.commit(); F.forget(u.uid); toast("Suspended."); setWhy(""); done(); } catch (e) { toast.error(F.err(e)); }
+  };
+  const lift = async () => { try { const b = F.writeBatch(F.db); b.update(F.doc(F.db, "users", u.uid), { suspendedUntil: 0 }); F.audit(b, me, "lifted suspension of", F.tag(u)); await b.commit(); F.forget(u.uid); toast("Suspension lifted."); done(); } catch (e) { toast.error(F.err(e)); } };
+  const preset = ([l, v]: [string, number]) => <button key={l} onClick={() => { setUnit(v >= 864e5 ? 864e5 : 36e5); setN(String(v / (v >= 864e5 ? 864e5 : 36e5))); }} className="rounded-full border border-border px-3 py-1 text-xs">{l}</button>;
+  return (
+    <div className="space-y-2">
+      <div className="text-sm">{left > 0 ? <>Suspended until {new Date(u.suspendedUntil).toLocaleString()} <span className="text-muted-foreground">({F.fmt(left)} left)</span></> : "Not suspended"}</div>
+      {canSusp(me, u) && <>
+        <div className="flex flex-wrap gap-2">{SUSP.map(preset)}</div>
+        <div className="flex items-center gap-2"><Input type="number" min={1} value={n} onChange={(e) => setN(e.target.value)} className="w-20" />
+          <select className={sel} value={unit} onChange={(e) => setUnit(+e.target.value)}><option value={6e4}>minutes</option><option value={36e5}>hours</option><option value={864e5}>days</option></select></div>
+        <Input value={why} maxLength={150} onChange={(e) => setWhy(e.target.value)} placeholder="Reason (saved in the audit log)" />
+        <div className="flex gap-2"><Button variant="destructive" className="!px-4 !py-1.5" onClick={apply}>Suspend</Button>{left > 0 && <Button variant="outline" className="!px-4 !py-1.5" onClick={lift}>Lift suspension</Button>}</div></>}
+    </div>
+  );
+}
 function Tools({ u, done }: any) {
   const { me } = F.useMe();
   const [blocked, setBlocked] = useState<boolean | null>(null);
   useEffect(() => { if (me?.role === "owner") F.getDoc(F.doc(F.db, "blocklist", u.uid)).then((s) => setBlocked(s.exists())).catch(() => {}); }, [u.uid, me?.uid]);
   if (!F.isMod(me) || me.uid === u.uid || u.role === "owner") return null;
-  const upd = async (patch: any) => { try { await F.updateDoc(F.doc(F.db, "users", u.uid), patch); F.forget(u.uid); toast("Updated."); done(); } catch (e) { toast.error(F.err(e)); } };
-  const block = async () => { try { const r = F.doc(F.db, "blocklist", u.uid); blocked ? await F.deleteDoc(r) : await F.setDoc(r, { username: u.username }); setBlocked(!blocked); } catch (e) { toast.error(F.err(e)); } };
-  const Row = ({ l, children }: any) => <div className="flex items-center justify-between gap-2"><span className="text-sm">{l}</span>{children}</div>;
+  const role = async (v: string) => { try { const b = F.writeBatch(F.db); b.update(F.doc(F.db, "users", u.uid), { role: v }); F.audit(b, me, "set", F.tag(u), "to " + (F.ROLES[v]?.l || v)); await b.commit(); F.forget(u.uid); toast("Updated."); done(); } catch (e) { toast.error(F.err(e)); } };
+  const block = async () => { try { const b = F.writeBatch(F.db), r = F.doc(F.db, "blocklist", u.uid); blocked ? b.delete(r) : b.set(r, { username: u.username }); F.audit(b, me, blocked ? "unblocklisted" : "blocklisted", F.tag(u)); await b.commit(); setBlocked(!blocked); } catch (e) { toast.error(F.err(e)); } };
   return (
-    <div className="mx-4 mb-3 space-y-2 rounded-xl border border-border p-3"><div className="text-xs text-muted-foreground">Moderator tools</div>
-      {me.role === "owner" && <Row l="Role"><Pick text={u.role === "default" ? "None" : u.role === "verified" ? "Verified" : "Mod"} value={u.role} options={[["default", "None"], ["verified", "Verified"], ["moderator", "Mod"]]} onChange={(v: string) => upd({ role: v })} /></Row>}
-      {canSusp(me, u) && <Row l={F.susp(u) ? "Suspended until " + new Date(u.suspendedUntil).toLocaleString() : "Suspension"}><Pick text="Set" value="" options={[["0", "Lift suspension"], ...SUSP.map(([l, v]) => [String(v), l])]} onChange={(v: string) => upd({ suspendedUntil: +v ? Date.now() + +v : 0 })} /></Row>}
-      {me.role === "owner" && blocked !== null && <Row l="Blocklist"><Button variant="outline" className="!px-3 !py-1" onClick={block}>{blocked ? "Unblock" : "Block"}</Button></Row>}
+    <div className="mx-4 mb-3 space-y-3 rounded-xl border border-border p-3"><div className="text-xs text-muted-foreground">Moderator tools</div>
+      {me.role === "owner" && <div className="flex items-center justify-between gap-2"><span className="text-sm">Role</span><Pick text={u.role === "default" ? "None" : u.role === "verified" ? "Verified" : "Mod"} value={u.role} options={[["default", "None"], ["verified", "Verified"], ["moderator", "Mod"]]} onChange={role} /></div>}
+      <SuspendPanel u={u} done={done} />
+      {me.role === "owner" && blocked !== null && <div className="flex items-center justify-between gap-2"><span className="text-sm">Blocklist</span><Button variant="outline" className="!px-3 !py-1" onClick={block}>{blocked ? "Unblock" : "Block"}</Button></div>}
     </div>
   );
 }
@@ -278,7 +381,7 @@ function Profile({ id }: { id: string }) {
     (async () => {
       setU(await F.getUser(id)); F.castleInfo(id).then(setInfo);
       const s = await F.getDocs(F.query(F.collection(F.db, "posts"), F.where("authorId", "==", id)));
-      setPs((await hydrate(s.docs.filter((d) => { const p: any = d.data(); return !p.removed || F.isMod(me) || id === me?.uid; }), me)).sort((a, b) => tm(b) - tm(a)));
+      setPs((await hydrate(s.docs.filter((d) => { const p: any = d.data(); return !(p.removed || p.deleted) || F.isMod(me) || (id === me?.uid && !p.deleted); }), me)).sort((a, b) => tm(b) - tm(a)));
     })().catch(() => {});
   }, [id, me?.uid, t]);
   if (!u) return <Empty icon="person" text="Loading…" />;
@@ -291,7 +394,7 @@ function Profile({ id }: { id: string }) {
       </div>
       {u.about && <p className="whitespace-pre-wrap break-words px-4 pb-3 text-sm">{u.about}</p>}
       <Tools u={u} done={reload} />
-      {self && <><Susp /><div className="flex flex-wrap gap-2 px-4 pb-3">{["default", "verified"].includes(u.role) && <Button variant="outline" onClick={() => go("#apply")}>Apply to be a moderator</Button>}<Button variant="outline" onClick={() => { F.signOut(F.auth); go(""); }}>Sign out</Button></div></>}
+      {self && <><Susp /><div className="flex flex-wrap gap-2 px-4 pb-3">{["default", "verified"].includes(u.role) && <Button variant="outline" onClick={() => go("#apply")}>Apply to be a moderator</Button>}<Button variant="outline" onClick={() => go("#rules")}>Community guidelines</Button><Button variant="outline" onClick={() => { F.signOut(F.auth); go(""); }}>Sign out</Button></div></>}
       <div className="border-t border-border px-3 py-2 text-sm text-muted-foreground">{ps.length} request{ps.length === 1 ? "" : "s"}</div>
       {ps.map((p) => <PostCard key={p.id} p={p} reload={reload} />)}
     </div>
@@ -318,7 +421,7 @@ function BottomNav({ hash, unread }: { hash: string; unread: number }) {
 export function App() {
   const hash = F.useHash(), [q, setQ] = useState(""), { me } = F.useMe();
   const [ib, setIb] = useState<any>({ items: [], seen: 0 }), prev = useRef(0);
-  const key = "rq.seen." + me?.uid, m = hash.match(/^#([pu])-([\w-]+)$/);
+  const key = "rq.seen." + me?.uid, m = hash.match(/^#([pue])-([\w-]+)$/);
   useEffect(() => { if (hash === "#inbox" && me) prev.current = +(localStorage.getItem(key) || 0); }, [hash, me?.uid]);
   useEffect(() => {
     if (!me) return setIb({ items: [], seen: 0 });
@@ -328,7 +431,7 @@ export function App() {
   return (
     <div className="min-h-full bg-black font-body text-white">
       <main className="mx-auto max-w-2xl" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 84px)" }}>
-        {m?.[1] === "p" ? <Post id={m[2]} /> : m?.[1] === "u" ? <Profile id={m[2]} /> : hash === "#new" ? <NewPost /> : hash === "#login" ? <Login /> : hash === "#apply" ? <Apply /> :
+        {m?.[1] === "p" ? <Post id={m[2]} /> : m?.[1] === "u" ? <Profile id={m[2]} /> : m?.[1] === "e" ? <EditPost id={m[2]} /> : hash === "#rules" ? <Rules /> : hash === "#new" ? <NewPost /> : hash === "#login" ? <Login /> : hash === "#apply" ? <Apply /> :
           hash === "#inbox" ? <Inbox items={ib.items} prev={prev.current} onSeen={() => setIb((s: any) => ({ ...s, seen: Date.now() }))} /> : hash === "#mod" ? <Mod /> : <Home q={q} setQ={setQ} />}
       </main>
       <BottomNav hash={hash} unread={unread} />
@@ -363,7 +466,7 @@ function Apply() {
   if (ex?.status === "pending") return <Form title="Moderator application"><p className="text-muted-foreground">Your application is waiting for review. You'll get a note in your inbox.</p></Form>;
   const send = async () => {
     if (!F.guard(me) || !text.trim()) return;
-    try { const r = F.doc(F.db, "modApplications", me.uid); if (ex) await F.deleteDoc(r); await F.setDoc(r, { text: text.trim(), status: "pending", createdAt: F.serverTimestamp() }); toast("Application sent."); go("#inbox"); } catch (e) { toast.error(F.err(e)); }
+    try { const r = F.doc(F.db, "modApplications", me.uid); if (ex) await F.deleteDoc(r); const b = F.writeBatch(F.db); b.set(r, { text: text.trim(), status: "pending", createdAt: F.serverTimestamp() }); F.audit(b, me, "applied for", "moderator"); await b.commit(); toast("Application sent."); go("#inbox"); } catch (e) { toast.error(F.err(e)); }
   };
   return <Form title="Moderator application">
     {ex?.status === "declined" && <p className="text-sm text-muted-foreground">Your last application was declined. You can apply again.</p>}
@@ -402,31 +505,99 @@ function Inbox({ items, prev, onSeen }: any) {
   );
 }
 
-function Mod() {
+// ── moderation: reports, removed items, applications (+stats), audit log ──
+const when = (t: any) => { const d = t?.toDate?.(); return d ? d.toLocaleDateString() + " " + d.toLocaleTimeString() : "…"; };
+function Reports() {
   const { me } = F.useMe();
-  const [apps, setApps] = useState<any[]>([]), [rem, setRem] = useState<any[]>([]), [t, setT] = useState(0);
+  const [rs, setRs] = useState<any[] | null>(null), [t, setT] = useState(0);
+  useEffect(() => {
+    (async () => {
+      const s = await F.getDocs(F.query(F.collection(F.db, "reports"), F.where("status", "==", "open")));
+      const l = await Promise.all(s.docs.map(async (d) => {
+        const r: any = { id: d.id, ref: d.ref, ...d.data() }; let prev = "";
+        try { const x: any = (await F.getDoc(r.kind === "comment" ? F.doc(F.db, "posts", r.postId, "comments", r.targetId) : F.doc(F.db, "posts", r.postId))).data(); prev = x ? (r.kind === "comment" ? x.text : x.title) : "(deleted)"; } catch { /* gone */ }
+        return { ...r, prev, u: await F.getUser(r.reporterId), a: await F.getUser(r.targetAuthorId) };
+      }));
+      setRs(l.sort((a, b) => tm(a) - tm(b)));
+    })().catch(() => setRs([]));
+  }, [t]);
+  const close = async (r: any, status: string) => {
+    try { const b = F.writeBatch(F.db); b.update(r.ref, { status, resolvedBy: me.uid, resolvedAt: F.serverTimestamp() }); F.audit(b, me, status === "resolved" ? "resolved report on" : "dismissed report on", r.kind === "comment" ? r.postId + "/" + r.targetId : r.targetId); await b.commit(); setT((x) => x + 1); } catch (e) { toast.error(F.err(e)); }
+  };
+  if (!rs) return <Empty icon="shield" text="Loading…" />;
+  return <div>{!rs.length && <p className="border-t border-border px-3 py-3 text-sm text-muted-foreground">No open reports.</p>}
+    {rs.map((r) => <div key={r.id} className="space-y-2 border-t border-border px-3 py-3">
+      <div className="text-xs text-muted-foreground">{r.kind === "comment" ? "Comment" : "Request"} by <Name u={r.a} /> · reported by <Name u={r.u} /> · {F.ago(r.createdAt)}</div>
+      <p className="line-clamp-3 break-words text-sm">{r.prev}</p><p className="break-words text-sm text-muted-foreground">Reason: {r.reason}</p>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" className="!px-3 !py-1" onClick={() => go("#p-" + r.postId)}>Open</Button><Button className="!px-3 !py-1" onClick={() => close(r, "resolved")}>Resolve</Button><Button variant="outline" className="!px-3 !py-1" onClick={() => close(r, "dismissed")}>Dismiss</Button></div></div>)}</div>;
+}
+function Removed() {
+  const { me } = F.useMe();
+  const [ps, setPs] = useState<any[]>([]), [cs, setCs] = useState<any[]>([]), [t, setT] = useState(0);
   const reload = () => setT((x) => x + 1);
   useEffect(() => {
-    if (!F.isMod(me)) return;
     (async () => {
-      if (me.role === "owner") { const a = await F.getDocs(F.query(F.collection(F.db, "modApplications"), F.where("status", "==", "pending"))); setApps(await Promise.all(a.docs.map(async (d) => ({ id: d.id, ...d.data(), u: await F.getUser(d.id) })))); }
       const r = await F.getDocs(F.query(F.collection(F.db, "posts"), F.where("removed", "==", true)));
-      setRem(await Promise.all(r.docs.map(async (d) => ({ id: d.id, ref: d.ref, ...d.data(), u: await F.getUser((d.data() as any).authorId) }))));
+      setPs(await Promise.all(r.docs.map(async (d) => ({ id: d.id, ref: d.ref, ...d.data(), u: await F.getUser((d.data() as any).authorId) }))));
+      const c = await F.getDocs(F.query(F.collection(F.db, "removedComments"), F.limit(100)));
+      setCs(await Promise.all(c.docs.map(async (d) => ({ id: d.id, ...d.data(), ref: F.doc(F.db, "posts", (d.data() as any).postId, "comments", d.id), u: await F.getUser((d.data() as any).authorId) }))));
     })().catch(() => {});
   }, [t, me?.uid]);
-  if (!F.isMod(me)) return <Empty icon="shield" text="Moderators only." />;
-  const decide = async (id: string, ok: boolean) => {
-    try { if (ok) await F.updateDoc(F.doc(F.db, "users", id), { role: "moderator" }); await F.updateDoc(F.doc(F.db, "modApplications", id), { status: ok ? "accepted" : "declined", decidedAt: F.serverTimestamp() }); F.forget(id); reload(); } catch (e) { toast.error(F.err(e)); }
+  return <div><div className="px-3 py-2 text-sm text-muted-foreground">Removed requests ({ps.length})</div>
+    {ps.map((p) => <div key={p.id} className="space-y-1 border-t border-border px-3 py-3"><div className="cursor-pointer font-medium" onClick={() => go("#p-" + p.id)}>{p.title}</div><div className="text-xs text-muted-foreground"><Name u={p.u} /></div><Reason x={p} /><div className="pt-1"><ModBtn x={p} kind="request" done={reload} /></div></div>)}
+    {!ps.length && <p className="border-t border-border px-3 py-3 text-sm text-muted-foreground">Nothing removed.</p>}
+    <div className="px-3 py-2 text-sm text-muted-foreground">Removed comments ({cs.length})</div>
+    {cs.map((c) => <div key={c.id} className="space-y-1 border-t border-border px-3 py-3"><div className="text-xs text-muted-foreground"><Name u={c.u} /> · {F.ago(c.createdAt)}</div><p className="line-clamp-3 break-words text-sm">{c.text}</p><p className="text-sm text-muted-foreground">Removed: {c.reason}</p>
+      <div className="flex gap-2 pt-1"><Button variant="outline" className="!px-3 !py-1" onClick={() => go("#p-" + c.postId)}>Open</Button><Button variant="outline" className="!px-3 !py-1" onClick={() => restoreIt(c, "comment", me, reload)}>Restore</Button></div></div>)}
+    {!cs.length && <p className="border-t border-border px-3 py-3 text-sm text-muted-foreground">No removed comments.</p>}</div>;
+}
+function AppStats({ id }: { id: string }) {
+  const [s, setS] = useState<any>(null);
+  useEffect(() => {
+    (async () => {
+      const col = F.collection(F.db, "posts"), u = await F.getUser(id);
+      const [n, r, c] = await Promise.all([F.getCountFromServer(F.query(col, F.where("authorId", "==", id))), F.getCountFromServer(F.query(col, F.where("authorId", "==", id), F.where("removed", "==", true))), F.castleCreated(id)]);
+      setS({ joined: u.createdAt?.toMillis?.(), n: n.data().count, r: r.data().count, c, sus: F.susp(u) });
+    })().catch(() => setS({}));
+  }, [id]);
+  if (!s) return <div className="text-xs text-muted-foreground">Loading stats…</div>;
+  const age = (ms?: number) => ms ? `${new Date(ms).toLocaleDateString()} (${Math.floor((Date.now() - ms) / 864e5)} days ago)` : "unavailable";
+  return <div className="space-y-0.5 text-xs text-muted-foreground"><div>Castletool account: {age(s.joined)}</div><div>Castle account: {age(s.c)}</div><div>Requests: {s.n ?? "?"} ({s.r ?? "?"} removed){s.sus ? " · currently suspended" : ""}</div></div>;
+}
+function Apps() {
+  const { me } = F.useMe();
+  const [apps, setApps] = useState<any[]>([]), [t, setT] = useState(0);
+  useEffect(() => { (async () => { const a = await F.getDocs(F.query(F.collection(F.db, "modApplications"), F.where("status", "==", "pending"))); setApps(await Promise.all(a.docs.map(async (d) => ({ id: d.id, ...d.data(), u: await F.getUser(d.id) })))); })().catch(() => {}); }, [t]);
+  const decide = async (a: any, ok: boolean) => {
+    try { const b = F.writeBatch(F.db); if (ok) b.update(F.doc(F.db, "users", a.id), { role: "moderator" }); b.update(F.doc(F.db, "modApplications", a.id), { status: ok ? "accepted" : "declined", decidedAt: F.serverTimestamp() }); F.audit(b, me, ok ? "accepted application of" : "declined application of", F.tag(a.u)); await b.commit(); F.forget(a.id); setT((x) => x + 1); } catch (e) { toast.error(F.err(e)); }
   };
+  return <div><div className="px-3 py-2 text-sm text-muted-foreground">Moderator applications ({apps.length})</div>
+    {apps.map((a) => <div key={a.id} className="space-y-2 border-t border-border px-3 py-3"><Name u={a.u} /><AppStats id={a.id} /><p className="whitespace-pre-wrap break-words text-sm">{a.text}</p>
+      <div className="flex gap-2"><Button className="!px-4 !py-1.5" onClick={() => decide(a, true)}>Accept</Button><Button variant="outline" className="!px-4 !py-1.5" onClick={() => decide(a, false)}>Decline</Button></div></div>)}
+    {!apps.length && <p className="border-t border-border px-3 py-3 text-sm text-muted-foreground">No pending applications.</p>}</div>;
+}
+function Audit() {
+  const [rows, setRows] = useState<any[]>([]), [cur, setCur] = useState<any>(null), [more, setMore] = useState(true), [busy, setBusy] = useState(false);
+  const load = async () => {
+    if (busy) return; setBusy(true);
+    try { const cs: any[] = [F.orderBy("createdAt", "desc")]; if (cur) cs.push(F.startAfter(cur)); cs.push(F.limit(50));
+      const s = await F.getDocs((F.query as any)(F.collection(F.db, "audit"), ...cs)); setRows((r) => [...r, ...s.docs.map((d: any) => ({ id: d.id, ...d.data() }))]); setCur(s.docs[s.docs.length - 1] || null); setMore(s.docs.length === 50); } catch { setMore(false); }
+    setBusy(false);
+  };
+  const sent = useSentinel(load, more && !busy);
+  return <div className="px-3 font-mono text-xs leading-relaxed">
+    {rows.map((r: any) => <div key={r.id} className="break-words border-t border-border py-1.5"><span className="text-muted-foreground">[{when(r.createdAt)}]</span> @{r.actorName} ({r.actor}) {r.action} {r.target}{r.detail ? " " + r.detail : ""}</div>)}
+    <div ref={sent} className="py-4 text-center text-muted-foreground">{busy ? "Loading…" : more ? "" : rows.length ? "End of log." : "Nothing logged yet."}</div></div>;
+}
+function Mod() {
+  const { me } = F.useMe();
+  const [tab, setTab] = useState("Reports");
+  if (!F.isMod(me)) return <Empty icon="shield" text="Moderators only." />;
+  const tabs = ["Reports", "Removed", ...(me.role === "owner" ? ["Applications", "Audit log"] : [])];
   return (
     <div><h2 className="font-title text-2xl" style={{ padding: "calc(env(safe-area-inset-top) + 12px) 12px 8px" }}>Moderation</h2>
-      {me.role === "owner" && <><div className="px-3 py-2 text-sm text-muted-foreground">Moderator applications ({apps.length})</div>
-        {apps.map((a) => <div key={a.id} className="space-y-2 border-t border-border px-3 py-3"><Name u={a.u} /><p className="whitespace-pre-wrap break-words text-sm">{a.text}</p>
-          <div className="flex gap-2"><Button className="!px-4 !py-1.5" onClick={() => decide(a.id, true)}>Accept</Button><Button variant="outline" className="!px-4 !py-1.5" onClick={() => decide(a.id, false)}>Decline</Button></div></div>)}
-        {!apps.length && <p className="border-t border-border px-3 py-3 text-sm text-muted-foreground">No pending applications.</p>}</>}
-      <div className="px-3 py-2 text-sm text-muted-foreground">Removed requests ({rem.length})</div>
-      {rem.map((p) => <div key={p.id} className="space-y-1 border-t border-border px-3 py-3"><div className="cursor-pointer font-medium" onClick={() => go("#p-" + p.id)}>{p.title}</div><div className="text-xs text-muted-foreground"><Name u={p.u} /></div><Reason x={p} /><div className="pt-1"><ModBtn x={p} kind="request" done={reload} /></div></div>)}
-      {!rem.length && <p className="border-t border-border px-3 py-3 text-sm text-muted-foreground">Nothing removed.</p>}
+      <div className="flex gap-2 overflow-x-auto px-3 pb-2">{tabs.map((x) => <button key={x} onClick={() => setTab(x)} className={"shrink-0 rounded-full border px-3 py-1 text-sm " + (tab === x ? "border-white bg-white text-black" : "border-border")}>{x}</button>)}</div>
+      {tab === "Reports" ? <Reports /> : tab === "Removed" ? <Removed /> : tab === "Applications" ? <Apps /> : <Audit />}
     </div>
   );
 }

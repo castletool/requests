@@ -1,0 +1,154 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return get(/databases/$(database)/documents/users/$(request.auth.uid)).data; }
+    function role() { return me().role; }
+    function isOwner() { return signedIn() && role() == 'owner'; }
+    function isMod() { return signedIn() && role() in ['moderator', 'owner']; }
+    function ok() {
+      return signedIn()
+        && !exists(/databases/$(database)/documents/blocklist/$(request.auth.uid))
+        && request.time.toMillis() > me().suspendedUntil;
+    }
+    function changes(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function str(v, max) { return v is string && v.size() > 0 && v.size() <= max; }
+    function reasonOk() { return request.resource.data.removed == false || str(request.resource.data.removedReason, 200); }
+    function lockOk() { return !('locked' in request.resource.data) || request.resource.data.locked is bool; }
+    function postOf(pid) { return get(/databases/$(database)/documents/posts/$(pid)).data; }
+    function unlocked(pid) { return !postOf(pid).get('locked', false) || isMod(); }
+    function canRun(pid) { return !postOf(pid).get('deleted', false); }
+
+    match /users/{uid} {
+      allow read: if true;
+      allow update: if isOwner() && uid != request.auth.uid && resource.data.role != 'owner'
+        && changes(['role']) && request.resource.data.role in ['default', 'verified', 'moderator'];
+      allow update: if isMod() && resource.data.role in ['default', 'verified']
+        && changes(['suspendedUntil']) && request.resource.data.suspendedUntil is int;
+    }
+
+    match /blocklist/{id} {
+      allow get: if true;
+      allow list: if isMod();
+      allow create, update, delete: if isOwner();
+    }
+
+    // one doc per user and kind; the post/comment create rules require it to be written in the same batch
+    match /limits/{id} {
+      allow read: if signedIn() && id in ['post-' + request.auth.uid, 'comment-' + request.auth.uid];
+      allow create: if ok() && id in ['post-' + request.auth.uid, 'comment-' + request.auth.uid]
+        && request.resource.data.keys().hasOnly(['t']) && request.resource.data.t == request.time;
+      allow update: if ok() && id in ['post-' + request.auth.uid, 'comment-' + request.auth.uid]
+        && request.resource.data.keys().hasOnly(['t']) && request.resource.data.t == request.time
+        && request.time > resource.data.t + duration.value(id.matches('post-.*') ? 60 : 15, 's');
+    }
+
+    match /posts/{pid} {
+      allow read: if true;
+      allow create: if ok()
+        && request.resource.data.keys().hasOnly(['authorId','authorName','type','title','description','status','removed','createdAt'])
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.authorName == me().username
+        && request.resource.data.type in ['Feature', 'Change', 'Visual Bug', 'Functional Bug']
+        && str(request.resource.data.title, 100)
+        && str(request.resource.data.description, 2000)
+        && request.resource.data.status == null
+        && request.resource.data.removed == false
+        && request.resource.data.createdAt == request.time
+        && getAfter(/databases/$(database)/documents/limits/$('post-' + request.auth.uid)).data.t == request.time;
+      allow update: if isOwner() && changes(['status','statusAt','removed','removedReason','removedAt','removedBy','type','locked'])
+        && request.resource.data.status in [null, 'Not Planned', 'Intended Feature', 'Low Priority', 'High Priority', 'Highest Priority', 'Completed']
+        && reasonOk() && lockOk();
+      allow update: if isMod() && changes(['removed','removedReason','removedAt','removedBy','type','locked'])
+        && reasonOk() && lockOk();
+      // author edit (not while locked or removed)
+      allow update: if ok() && resource.data.authorId == request.auth.uid
+        && !resource.data.removed && !resource.data.get('deleted', false) && !resource.data.get('locked', false)
+        && changes(['title','description','editedAt'])
+        && str(request.resource.data.title, 100) && str(request.resource.data.description, 2000)
+        && request.resource.data.editedAt == request.time;
+      // author soft delete
+      allow update: if ok() && resource.data.authorId == request.auth.uid
+        && !resource.data.removed && !resource.data.get('deleted', false)
+        && changes(['deleted','deletedAt'])
+        && request.resource.data.deleted == true && request.resource.data.deletedAt == request.time;
+
+      match /comments/{cid} {
+        allow read: if true;
+        allow create: if ok() && canRun(pid) && unlocked(pid)
+          && request.resource.data.keys().hasOnly(['authorId','authorName','text','removed','createdAt'])
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.authorName == me().username
+          && str(request.resource.data.text, 1000)
+          && request.resource.data.removed == false
+          && request.resource.data.createdAt == request.time
+          && getAfter(/databases/$(database)/documents/limits/$('comment-' + request.auth.uid)).data.t == request.time;
+        allow update: if isMod() && changes(['removed','removedReason','removedAt','removedBy']) && reasonOk();
+        allow update: if ok() && resource.data.authorId == request.auth.uid
+          && !resource.data.removed && !resource.data.get('deleted', false) && unlocked(pid)
+          && changes(['text','editedAt'])
+          && str(request.resource.data.text, 1000) && request.resource.data.editedAt == request.time;
+        allow update: if ok() && resource.data.authorId == request.auth.uid
+          && !resource.data.removed && !resource.data.get('deleted', false)
+          && changes(['deleted','deletedAt'])
+          && request.resource.data.deleted == true && request.resource.data.deletedAt == request.time;
+      }
+
+      match /votes/{uid} {
+        allow read: if true;
+        allow create, update: if ok() && uid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['score'])
+          && request.resource.data.score in (role() == 'default' ? [1, -1] : [2, -2]);
+        allow delete: if signedIn() && uid == request.auth.uid;
+      }
+    }
+
+    // snapshot of removed comments so moderators can list and restore them
+    match /removedComments/{id} {
+      allow read, delete: if isMod();
+      allow create: if isMod()
+        && request.resource.data.keys().hasOnly(['postId','authorId','text','reason','createdAt'])
+        && request.resource.data.createdAt == request.time;
+    }
+
+    // one report per user per target (document id = reporter + '_' + target)
+    match /reports/{id} {
+      allow create: if ok() && id == request.auth.uid + '_' + request.resource.data.targetId
+        && request.resource.data.keys().hasOnly(['reporterId','reporterName','kind','postId','targetId','targetAuthorId','reason','status','createdAt'])
+        && request.resource.data.reporterId == request.auth.uid
+        && request.resource.data.kind in ['post', 'comment']
+        && str(request.resource.data.reason, 300)
+        && request.resource.data.status == 'open'
+        && request.resource.data.createdAt == request.time;
+      allow read: if isMod();
+      allow update: if isMod() && changes(['status','resolvedBy','resolvedAt'])
+        && request.resource.data.status in ['resolved', 'dismissed'] && request.resource.data.resolvedAt == request.time;
+    }
+
+    match /modApplications/{uid} {
+      allow create: if ok() && uid == request.auth.uid && role() in ['default', 'verified']
+        && request.resource.data.keys().hasOnly(['text', 'status', 'createdAt'])
+        && request.resource.data.status == 'pending'
+        && str(request.resource.data.text, 1500)
+        && request.resource.data.createdAt == request.time;
+      allow read: if isOwner() || (signedIn() && uid == request.auth.uid);
+      allow update: if isOwner() && changes(['status', 'decidedAt'])
+        && request.resource.data.status in ['accepted', 'declined'];
+      allow delete: if isOwner() || (signedIn() && uid == request.auth.uid);
+    }
+
+    // written by the client together with each action; only the owner can read it
+    match /audit/{id} {
+      allow read: if isOwner();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['actor','actorName','action','target','detail','createdAt'])
+        && request.resource.data.actor == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.target.size() <= 120 && request.resource.data.detail.size() <= 250
+        && (request.resource.data.action in ['posted', 'commented', 'edited', 'deleted', 'reported', 'applied for']
+          || (isMod() && request.resource.data.action in ['removed', 'restored', 'locked', 'unlocked', 'suspended', 'lifted suspension of', 'resolved report on', 'dismissed report on'])
+          || (isOwner() && request.resource.data.action in ['set', 'blocklisted', 'unblocklisted', 'accepted application of', 'declined application of']));
+    }
+  }
+}

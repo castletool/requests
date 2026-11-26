@@ -84,7 +84,7 @@ export function audit(b: any, me: any, action: string, target: string, detail = 
 }
 export const limitDoc = (uid: string, kind: string) => doc(db, "limits", kind + "-" + uid);
 /** Seconds until this user may post / comment again (rules enforce 60s for posts, 15s for comments). */
-export async function waitLeft(uid: string, kind: "post" | "comment") {
+export async function waitLeft(uid: string, kind: "post" | "comment" | "react") {
   try { const t = (await getDoc(limitDoc(uid, kind))).data()?.t?.toMillis?.(); return t ? Math.max(0, Math.ceil((t + (kind === "post" ? 60e3 : 15e3) - Date.now()) / 1000)) : 0; } catch { return 0; }
 }
 /** Castle account creation time (ms), best effort. */
@@ -95,3 +95,28 @@ export async function castleCreated(id: string): Promise<number | null> {
     const n = typeof v === "number" ? (v < 1e12 ? v * 1000 : v) : Date.parse(v); return isFinite(n) ? n : null;
   } catch { return null; }
 }
+
+// ── pings: @username, @moderators, @owner (anyone) and @verified, @everyone (owner only)
+export const PING_GROUPS = ["moderators", "owner", "verified", "everyone"];
+export const MAX_PINGS = 10;
+/** Matches @name when it is not glued to a word (so emails don't count). Group 2 is the name. */
+export const MENTION_RE = /(^|[^\w@])@([A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?)/g;
+export const pingId = (commentId: string) => String(9999999999999 - Date.now()).padStart(13, "0") + "_" + commentId;
+/** Turns the @mentions in a comment into ping targets: user ids and group names. */
+export async function resolvePings(text: string, me: any): Promise<{ targets: string[]; denied: string[]; tooMany: boolean }> {
+  const names = [...new Set([...text.matchAll(MENTION_RE)].map((m) => m[2]))];
+  const targets = new Set<string>(), denied: string[] = [];
+  for (const n of names) {
+    const g = n.toLowerCase();
+    if (PING_GROUPS.includes(g)) { if ((g === "verified" || g === "everyone") && me.role !== "owner") denied.push("@" + g); else targets.add(g); continue; }
+    for (const v of [...new Set([n, n[0].toUpperCase() + n.slice(1), g])]) {
+      try {
+        const s = await getDocs(query(collection(db, "users"), where("username", "==", v), limit(1)));
+        if (!s.empty) { if (s.docs[0].id !== me.uid) targets.add(s.docs[0].id); break; }
+      } catch { /* no match */ }
+    }
+  }
+  return { targets: [...targets], denied, tooMany: targets.size > MAX_PINGS };
+}
+/** Ping inboxes this account may read. */
+export const pingBoxes = (m: any) => [m.uid, "everyone", ...(m.role !== "default" ? ["verified"] : []), ...(isMod(m) ? ["moderators"] : []), ...(m.role === "owner" ? ["owner"] : [])];

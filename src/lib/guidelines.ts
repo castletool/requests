@@ -65,26 +65,49 @@ No content that promotes hatred or violence against people or groups, including 
 - One person, one account.
 - Do not try to overload or break the site or the services behind it.
 
-## 10. Honesty and impersonation
+## 10. Pinging people
+
+You can ping someone in a comment with **@username**. They get a note in their Inbox. Staff can be reached with **@moderators** and **@owner**.
+
+- Ping only when you need that person's input or want them to see something. Do not ping to get attention, to argue, or to hurry a request along.
+- Do not ping the same person again and again, and do not ping many people at once. A comment can ping at most 10.
+- Do not use **@moderators** or **@owner** to nag about a request or a status. To flag a rule break, use Report instead.
+- **@verified** and **@everyone** are reserved for the owner.
+- Ping abuse counts as spam and can lead to removal or suspension.
+
+## 11. Emoji and reactions
+
+- Emoji on this site are drawn from the Mutant Standard set. Typing **:** opens a list of names, and the face button opens the full picker.
+- Do not use emoji that show or imply something against these guidelines, such as sexual content, offensive gestures, or drug references. The ones we know about are not offered in the picker, but you must not use the unicode versions either (for example the middle finger, rooster, peacock, peach, melon, cherry, eggplant, banana, cannabis leaf, and the 18+ sign).
+- Do not use emoji, alone or in groups, to harass, mock, or pressure someone, or to spam.
+- Reactions are for simple feedback. Do not use them to pile on a person, post, or comment, and do not react in bulk. Reactions that break these rules can be removed and may lead to action against the account.
+
+## 12. Profile descriptions
+
+- Your profile description is plain text, up to 300 characters, and is public.
+- Everything in these guidelines applies to it: no hate, harassment, sexual content, personal information (yours or anyone else's), advertising, spam, or impersonation of staff, Castle, or other users.
+- Staff can remove a description that breaks the rules and may take further action.
+
+## 13. Honesty and impersonation
 
 - Do not impersonate staff, moderators, Castle, or other users, and do not claim to speak for the project.
 - Do not post false or misleading information, or promise features or timelines that staff have not announced.
 - Status labels (for example Intended Feature or High Priority) are set only by the owner and are not guarantees of a release date.
 
-## 11. Links, files, and media
+## 14. Links, files, and media
 
 - Only link to things that are safe and relevant. No phishing, malware, scams, adult content, or links meant to track or mislead people.
 - Only upload or link content that you made or have permission to share. Do not post pirated or copyrighted material.
 - Security problems: do not post working exploits publicly. Contact the owner privately instead at castletool.xyz@gmail.com.
 
-## 12. Roles
+## 15. Roles
 
 - **Verified** is a thank-you for people who contribute a lot. It gives no authority.
 - **Moderators** remove content, handle duplicates, and suspend accounts under these rules. They can be wrong, so be respectful if you disagree.
 - **The owner** has the final say on moderation and on request statuses.
 - Moderators and the owner must follow these rules too.
 
-## 13. Enforcement
+## 16. Enforcement
 
 If you break these rules, staff may:
 
@@ -98,11 +121,15 @@ Minor first offenses usually get a warning or removal. Serious violations (child
 
 You can request a suspension appeal at castletool.xyz@gmail.com and it will be reviewed.
 
-## 14. Reporting
+## 17. Reporting
 
 Use the ⋯ menu on any request or comment, choose Report, and explain what is wrong. Moderators review every report and may remove the content, suspend the account, or dismiss the report. Do not report to get back at someone: false or abusive reports can lead to action against your account. For urgent or illegal content, email castletool.xyz@gmail.com.
 
-## 15. Changes
+## 18. Changes
 
 These guidelines are a living document and may change as the site grows. Continuing to use the site means you accept the current version.
+
+## 19. Credits
+
+Emoji are [Mutant Standard](https://mutant.tech/) by Dzuk, licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
 `;

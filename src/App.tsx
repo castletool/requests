@@ -8,7 +8,9 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { Md } from "@/components/Md";
 import { GUIDELINES } from "@/lib/guidelines";
 import * as F from "@/lib/fb";
-import { MD } from "@/lib/mdicons";
+import { Ic } from "@/components/Ic";
+import { EmojiTextarea, InlineEmoji } from "@/components/Emoji";
+import { Reactions } from "@/components/Reactions";
 
 const TYPES = Object.keys(F.TAGS), go = (h: string) => { location.hash = h; };
 const sel = "h-9 rounded-full border border-border bg-black px-3 text-sm";
@@ -16,9 +18,6 @@ const stop = (e: any) => e.stopPropagation();
 const agoMs = (ms: number) => F.ago({ toMillis: () => ms });
 const SUSP: [string, number][] = [["1 hour", 36e5], ["1 day", 864e5], ["7 days", 6048e5], ["30 days", 2592e6]];
 
-function Ic({ n, f, s = 20, c }: { n: string; f?: boolean; s?: number; c?: string }) {
-  return <svg viewBox="0 -960 960 960" width={s} height={s} fill={c || "currentColor"} className="shrink-0" aria-hidden><path d={MD[n]?.[f ? "f" : "o"]} /></svg>;
-}
 function Avatar({ u, s = 24 }: any) {
   const [bad, setBad] = useState(false);
   return u.photo && !bad ? <img src={u.photo} alt="" onError={() => setBad(true)} className="shrink-0 rounded-full object-cover" style={{ width: s, height: s }} />
@@ -39,7 +38,7 @@ function Pick({ text, value, options, onChange, className }: any) {
 }
 
 // ── dialogs and item actions ───────────────────────────────────────────
-type AskOpts = { title: string; placeholder?: string; initial?: string; action: string; danger?: boolean; field?: boolean; suspend?: boolean; max?: number };
+type AskOpts = { title: string; placeholder?: string; initial?: string; action: string; danger?: boolean; field?: boolean; suspend?: boolean; max?: number; emoji?: boolean; allowEmpty?: boolean };
 let ask: (o: AskOpts) => Promise<{ reason: string; ms: number } | null> = async () => null;
 function AskHost() {
   const [s, setS] = useState<any>(null), [v, setV] = useState(""), [ms, setMs] = useState(0);
@@ -50,9 +49,9 @@ function AskHost() {
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/70 p-3 sm:items-center" onClick={() => done(null)}>
       <div className="w-full max-w-md space-y-3 rounded-2xl border border-border bg-black p-4" onClick={stop}>
         <h3 className="text-lg font-medium">{o.title}</h3>
-        {f && <Textarea autoFocus value={v} maxLength={o.max || 200} onChange={(e) => setV(e.target.value)} placeholder={o.placeholder} className="min-h-[90px]" />}
+        {f && (o.emoji ? <EmojiTextarea autoFocus value={v} maxLength={o.max || 200} onChange={setV} placeholder={o.placeholder} className="min-h-[90px]" /> : <Textarea autoFocus value={v} maxLength={o.max || 200} onChange={(e) => setV(e.target.value)} placeholder={o.placeholder} className="min-h-[90px]" />)}
         {o.suspend && <label className="flex items-center justify-between gap-2 text-sm">Also suspend the author<select className={sel} value={ms} onChange={(e) => setMs(+e.target.value)}><option value={0}>No suspension</option>{SUSP.map(([l, x]) => <option key={l} value={x}>{l}</option>)}</select></label>}
-        <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => done(null)}>Cancel</Button><Button variant={o.danger ? "destructive" : undefined} disabled={f && !v.trim()} onClick={() => done({ reason: v.trim(), ms })}>{o.action}</Button></div>
+        <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => done(null)}>Cancel</Button><Button variant={o.danger ? "destructive" : undefined} disabled={f && !o.allowEmpty && !v.trim()} onClick={() => done({ reason: v.trim(), ms })}>{o.action}</Button></div>
       </div>
     </div>
   );
@@ -87,7 +86,7 @@ function ItemMenu({ x, u, kind, done }: any) {
   if (gone && !mod) return null;
   const run = (f: () => Promise<void>) => setTimeout(() => f().catch((e) => toast.error(F.err(e))), 60);
   const edit = () => kind === "request" ? go("#e-" + x.id) : run(async () => {
-    const r = await ask({ title: "Edit comment", initial: x.text, max: 1000, action: "Save" }); if (!r) return;
+    const r = await ask({ title: "Edit comment", initial: x.text, max: 1000, action: "Save", emoji: true }); if (!r) return;
     const b = F.writeBatch(F.db); b.update(x.ref, { text: r.reason, editedAt: F.serverTimestamp() }); F.audit(b, me, "edited", t); await b.commit(); done();
   });
   const del = () => run(async () => {
@@ -145,7 +144,7 @@ function PostCard({ p, reload, full }: any) {
           <ItemMenu x={p} u={p.u} kind="request" done={reload} /></div></div>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs"><Badge t={p.type} />{p.locked && <Badge t="Locked" />}{p.status && <Chip status={p.status} />}</div>
       <div className={"mt-1.5 break-words font-medium leading-snug " + (full ? "text-xl" : "text-lg")}>{p.deleted ? "[deleted]" : (p.removed ? "[removed] " : "") + p.title}</div>
-      {p.deleted ? <p className="mt-1 text-sm text-muted-foreground">Deleted by the author.</p> : full ? <Md text={p.description} /> : !media && <p className="mt-1 line-clamp-3 break-words text-sm text-muted-foreground">{p.description}</p>}
+      {p.deleted ? <p className="mt-1 text-sm text-muted-foreground">Deleted by the author.</p> : full ? <Md text={p.description} mentions={false} /> : !media && <p className="mt-1 line-clamp-3 break-words text-sm text-muted-foreground"><InlineEmoji text={p.description} /></p>}
       <Reason x={p} />
       <div className="mt-2 flex items-center gap-3" onClick={stop}><Votes id={p.id} s={p.s} m={p.m} done={reload} />
         <span className="inline-flex items-center gap-1 text-sm text-muted-foreground"><Ic n="chat_bubble" s={18} />{p.cn}</span></div>
@@ -249,6 +248,9 @@ function Post({ id }: { id: string }) {
   const { me } = F.useMe();
   const [p, setP] = useState<any>(undefined), [cs, setCs] = useState<any[]>([]), [t, setT] = useState(0), [text, setText] = useState(""), [busy, setBusy] = useState(false);
   const reload = () => setT((x) => x + 1);
+  const [rx, setRx] = useState<any[]>([]);
+  const loadRx = () => F.getDocs(F.query(F.collection(F.db, "posts", id, "reactions"), F.limit(2000))).then((r) => setRx(r.docs.map((d) => d.data()))).catch(() => {});
+  useEffect(() => { loadRx(); }, [id]);
   useEffect(() => {
     (async () => {
       const s = await F.getDoc(F.doc(F.db, "posts", id));
@@ -265,8 +267,12 @@ function Post({ id }: { id: string }) {
     const w = await F.waitLeft(me.uid, "comment"); if (w > 0) return void toast(`Slow down. Try again in ${w}s.`);
     setBusy(true);
     try {
+      const pr = await F.resolvePings(text, me);
+      if (pr.denied.length) { setBusy(false); return void toast(`Only the owner can ping ${pr.denied.join(", ")}.`); }
+      if (pr.tooMany) { setBusy(false); return void toast(`Ping at most ${F.MAX_PINGS} people per comment.`); }
       const cr = F.doc(F.collection(F.db, "posts", id, "comments")), b = F.writeBatch(F.db);
-      b.set(cr, { authorId: me.uid, authorName: me.username, text: text.trim(), removed: false, createdAt: F.serverTimestamp() });
+      b.set(cr, { authorId: me.uid, authorName: me.username, text: text.trim(), removed: false, ...(pr.targets.length ? { pings: pr.targets } : {}), createdAt: F.serverTimestamp() });
+      pr.targets.forEach((t) => b.set(F.doc(F.db, "pings", t, "items", F.pingId(cr.id)), { postId: id, commentId: cr.id, fromId: me.uid, fromName: me.username, text: text.trim().slice(0, 140), createdAt: F.serverTimestamp() }));
       b.set(F.limitDoc(me.uid, "comment"), { t: F.serverTimestamp() }); F.audit(b, me, "commented", id + "/" + cr.id);
       await b.commit(); setText(""); reload();
     } catch (e) { toast.error(F.err(e)); }
@@ -277,15 +283,17 @@ function Post({ id }: { id: string }) {
     <div>
       <button onClick={() => history.length > 1 ? history.back() : go("")} className="flex items-center gap-1 px-3 py-3 text-sm text-muted-foreground" style={{ paddingTop: "calc(env(safe-area-inset-top) + 12px)" }}><Ic n="arrow_back" s={18} />Back</button>
       <PostCard p={p} reload={reload} full />
+      {!p.deleted && !p.removed && <div className="px-3 pb-3"><Reactions pid={id} target="post" all={rx} me={me} reload={loadRx} /></div>}
       <div className="border-t border-border px-3 py-2 text-sm text-muted-foreground">{cs.length} comment{cs.length === 1 ? "" : "s"}</div>
       {cs.filter((c) => !c.removed || F.isMod(me) || c.authorId === me?.uid).map((c) => (
         <div key={c.id} className="border-t border-border px-3 py-3" style={{ opacity: c.removed || c.deleted ? 0.55 : 1 }}>
           <div className="flex items-center gap-2 text-sm"><Avatar u={c.u} s={22} /><Name u={c.u} /><span className="text-muted-foreground">· {F.ago(c.createdAt)}{c.editedAt ? " · edited" : ""}</span><div className="ml-auto"><ItemMenu x={c} u={c.u} kind="comment" done={reload} /></div></div>
           <div className="mt-1">{c.deleted ? <p className="text-muted-foreground">[deleted]</p> : c.removed ? <p>[removed]</p> : <Md text={c.text} />}</div><Reason x={c} />
+          {!c.deleted && !c.removed && <Reactions pid={id} target={c.id} all={rx} me={me} reload={loadRx} />}
         </div>))}
       <div className="space-y-2 border-t border-border p-3">
         {!me ? <Button variant="outline" onClick={() => go("#login")}>Sign in to vote or comment</Button> : p.deleted ? null : locked ? <p className="text-sm text-muted-foreground">This request is locked. New comments are turned off.</p> :
-          <><Textarea value={text} maxLength={1000} onChange={(e) => setText(e.target.value)} placeholder="Add a comment (markdown supported)" className="min-h-[70px]" /><Button disabled={busy} onClick={post}>Comment</Button></>}
+          <><EmojiTextarea value={text} maxLength={1000} onChange={setText} placeholder="Add a comment (markdown, @pings and :emoji: supported)" className="min-h-[70px]" /><Button disabled={busy} onClick={post}>Comment</Button></>}
       </div>
     </div>
   );
@@ -308,7 +316,7 @@ function NewPost() {
   };
   return <Form title="New request">
     <div className="flex gap-2"><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} placeholder="Title" /><Pick text={type} value={type} options={TYPES.map((k) => [k, k])} onChange={setType} className="h-10" /></div>
-    <Textarea value={desc} maxLength={2000} onChange={(e) => setDesc(e.target.value)} placeholder="Describe it. Markdown and links are supported." className="min-h-[180px]" />
+    <EmojiTextarea value={desc} maxLength={2000} onChange={setDesc} placeholder="Describe it. Markdown, links and :emoji: are supported." className="min-h-[180px]" />
     <Button disabled={busy} onClick={submit}>Post</Button>
     <p className="text-xs text-muted-foreground">By posting you agree to the <a href="#rules" className="underline">community guidelines</a>.</p>
   </Form>;
@@ -324,7 +332,7 @@ function EditPost({ id }: { id: string }) {
     if (!F.guard(me) || !title.trim() || !desc.trim()) return; setBusy(true);
     try { const b = F.writeBatch(F.db); b.update(p.ref, { title: title.trim(), description: desc.trim(), editedAt: F.serverTimestamp() }); F.audit(b, me, "edited", id); await b.commit(); go("#p-" + id); } catch (e) { toast.error(F.err(e)); setBusy(false); }
   };
-  return <Form title="Edit request"><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} /><Textarea value={desc} maxLength={2000} onChange={(e) => setDesc(e.target.value)} className="min-h-[180px]" />
+  return <Form title="Edit request"><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} /><EmojiTextarea value={desc} maxLength={2000} onChange={setDesc} className="min-h-[180px]" />
     <div className="flex gap-2"><Button disabled={busy} onClick={save}>Save</Button><Button variant="outline" onClick={() => history.back()}>Cancel</Button></div></Form>;
 }
 
@@ -392,7 +400,11 @@ function Profile({ id }: { id: string }) {
         {photo ? <img src={photo} alt="" className="h-16 w-16 rounded-full object-cover" /> : <div className="flex h-16 w-16 items-center justify-center rounded-full bg-secondary"><Ic n="person" s={32} c="#888" /></div>}
         <div><Name u={u} big /><div className="text-sm text-muted-foreground">{r.l}{info ? ` · ${info.followersCount ?? 0} followers · ${info.publicDecksCount ?? 0} public decks` : ""}</div></div>
       </div>
-      {u.about && <p className="whitespace-pre-wrap break-words px-4 pb-3 text-sm">{u.about}</p>}
+      {(u.bio || u.about) && <p className="whitespace-pre-wrap break-words px-4 pb-3 text-sm"><InlineEmoji text={u.bio || u.about} /></p>}
+      {self && !F.susp(me) && <div className="px-4 pb-3"><Button variant="outline" className="!px-3 !py-1" onClick={async () => {
+        const r = await ask({ title: "Profile description", initial: u.bio || "", placeholder: "Tell people about yourself", max: 300, action: "Save", emoji: true, allowEmpty: true }); if (!r) return;
+        try { await F.updateDoc(F.doc(F.db, "users", me.uid), { bio: r.reason }); F.forget(me.uid); await F.loadMe(); reload(); toast("Saved."); } catch (e) { toast.error(F.err(e)); }
+      }}>{u.bio ? "Edit description" : "Add description"}</Button></div>}
       <Tools u={u} done={reload} />
       {self && <><Susp /><div className="flex flex-wrap gap-2 px-4 pb-3">{["default", "verified"].includes(u.role) && <Button variant="outline" onClick={() => go("#apply")}>Apply to be a moderator</Button>}<Button variant="outline" onClick={() => go("#rules")}>Community guidelines</Button><Button variant="outline" onClick={() => { F.signOut(F.auth); go(""); }}>Sign out</Button></div></>}
       <div className="border-t border-border px-3 py-2 text-sm text-muted-foreground">{ps.length} request{ps.length === 1 ? "" : "s"}</div>
@@ -485,6 +497,19 @@ async function getInbox(me: any) {
     const o = c.docs.map((x) => x.data() as any).filter((x) => x.authorId !== me.uid && !x.removed);
     if (o.length) items.push({ t: o[0].createdAt?.toMillis() || 0, id, icon: "keyboard_arrow_up", text: `${o[0].authorName} commented on “${p.title}”${o.length > 1 ? ` (+${o.length - 1} more)` : ""}.`, sub: o[0].text });
   }));
+  // pings: direct, plus group boxes this role can read; deduped per comment, hidden if the comment or request is gone
+  const seen = new Set<string>(), posts = new Map<string, any>();
+  const boxes = await Promise.all(F.pingBoxes(me).map((t) => F.getDocs(F.query(F.collection(F.db, "pings", t, "items"), F.limit(15))).catch(() => null)));
+  const pings = boxes.flatMap((x) => x?.docs.map((d) => d.data() as any) || []).filter((d) => d.fromId !== me.uid && !seen.has(d.commentId) && seen.add(d.commentId));
+  await Promise.all(pings.map(async (d) => {
+    try {
+      if (!posts.has(d.postId)) posts.set(d.postId, F.getDoc(F.doc(F.db, "posts", d.postId)));
+      const [ps, cs] = await Promise.all([posts.get(d.postId), F.getDoc(F.doc(F.db, "posts", d.postId, "comments", d.commentId))]);
+      const p: any = ps.data(), c: any = cs.data();
+      if (!p || p.removed || p.deleted || !c || c.removed || c.deleted) return;
+      items.push({ t: d.createdAt?.toMillis() || 0, id: d.postId, icon: "alternate_email", text: `${d.fromName} pinged you on “${p.title}”.`, sub: c.text });
+    } catch { /* skip */ }
+  }));
   return items.sort((a, b) => b.t - a.t);
 }
 
@@ -498,7 +523,7 @@ function Inbox({ items, prev, onSeen }: any) {
         items.map((i: any, k: number) => (
           <div key={k} onClick={() => i.id && go("#p-" + i.id)} className="flex cursor-pointer gap-3 border-t border-border px-3 py-3 active:bg-secondary/60">
             <Ic n={i.icon} s={22} c={i.color || "#fff"} />
-            <div className="min-w-0 flex-1"><div className="break-words">{i.text}</div>{i.sub && <p className="mt-0.5 line-clamp-2 break-words text-sm text-muted-foreground">{i.sub}</p>}<div className="mt-1 text-xs text-muted-foreground">{i.t ? agoMs(i.t) : ""}</div></div>
+            <div className="min-w-0 flex-1"><div className="break-words">{i.text}</div>{i.sub && <p className="mt-0.5 line-clamp-2 break-words text-sm text-muted-foreground"><InlineEmoji text={i.sub} /></p>}<div className="mt-1 text-xs text-muted-foreground">{i.t ? agoMs(i.t) : ""}</div></div>
             {i.t > prev && <span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-white" />}
           </div>))}
     </div>

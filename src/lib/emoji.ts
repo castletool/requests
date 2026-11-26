@@ -5,7 +5,8 @@ export type Cat = { id: string; label: string; icon: string; codes: string[] };
 export const CATS: Cat[] = (idx as any).cats;
 export const CODES: string[] = CATS.flatMap((c) => c.codes);
 export const CODE_SET = new Set(CODES);
-export const emojiUrl = (code: string) => `/emoji/${code}.svg`;
+export const emojiUrl = (code: string) =>
+  `${import.meta.env.BASE_URL}emoji/${code}.svg`;
 export const MAX_REACTIONS = 20;
 
 const U: Record<string, string> = (idx as any).unicode;

@@ -31,7 +31,7 @@ const Chip = ({ status }: { status: string }) => { const [c, i] = F.STATUS[statu
 const Badge = ({ t }: { t: string }) => <span className="rounded-full bg-secondary px-2 py-0.5 text-white">{t}</span>;
 const Reason = ({ x }: any) => x.removed && x.removedReason ? <p className="mt-2 rounded-lg border border-border p-2 text-sm text-muted-foreground">Removed: {x.removedReason}</p> : null;
 const Empty = ({ icon, text }: { icon: string; text: string }) => <div className="flex flex-col items-center gap-2 p-10 text-center text-muted-foreground"><Ic n={icon} s={36} />{text}</div>;
-const Form = ({ title, children }: any) => <div className="space-y-3 p-3"><h2 className="font-title text-2xl">{title}</h2>{children}</div>;
+const Form = ({ title, children, fill }: any) => <div className={fill ? "flex min-h-[calc(100dvh-84px-env(safe-area-inset-bottom))] flex-col gap-3 p-3" : "space-y-3 p-3"}><h2 className="font-title text-2xl">{title}</h2>{children}</div>;
 function Pick({ text, value, options, onChange, className }: any) {
   return <DropdownMenu><DropdownMenuTrigger className={"inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-border px-3 text-sm " + (className || "")}>{text}<Ic n="keyboard_arrow_down" s={18} /></DropdownMenuTrigger>
     <DropdownMenuContent align="end"><DropdownMenuRadioGroup value={value} onValueChange={onChange}>{options.map(([v, l]: any) => <DropdownMenuRadioItem key={v} value={v}>{l}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>;
@@ -46,7 +46,7 @@ function AskHost() {
   if (!s) return null;
   const o: AskOpts = s.o, f = o.field !== false, done = (x: any) => { s.r(x); setS(null); };
   return (
-    <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/70 p-3 sm:items-center" onClick={() => done(null)}>
+    <div data-overlay className="fixed inset-0 z-30 flex items-end justify-center bg-black/70 p-3 sm:items-center" onClick={() => done(null)}>
       <div className="w-full max-w-md space-y-3 rounded-2xl border border-border bg-black p-4" onClick={stop}>
         <h3 className="text-lg font-medium">{o.title}</h3>
         {f && (o.emoji ? <EmojiTextarea autoFocus value={v} maxLength={o.max || 200} onChange={setV} placeholder={o.placeholder} className="min-h-[90px]" /> : <Textarea autoFocus value={v} maxLength={o.max || 200} onChange={(e) => setV(e.target.value)} placeholder={o.placeholder} className="min-h-[90px]" />)}
@@ -293,7 +293,7 @@ function Post({ id }: { id: string }) {
         </div>))}
       <div className="space-y-2 border-t border-border p-3">
         {!me ? <Button variant="outline" onClick={() => go("#login")}>Sign in to vote or comment</Button> : p.deleted ? null : locked ? <p className="text-sm text-muted-foreground">This request is locked. New comments are turned off.</p> :
-          <><EmojiTextarea value={text} maxLength={1000} onChange={setText} placeholder="Add a comment (markdown, @pings and :emoji: supported)" className="min-h-[70px]" /><Button disabled={busy} onClick={post}>Comment</Button></>}
+          <><EmojiTextarea value={text} maxLength={1000} onChange={setText} placeholder="Add a comment (markdown, @pings and :emoji: supported)" className="min-h-[70px]" grow={240} /><Button disabled={busy} onClick={post}>Comment</Button></>}
       </div>
     </div>
   );
@@ -314,10 +314,10 @@ function NewPost() {
       await b.commit(); go("#p-" + pr.id);
     } catch (e) { toast.error(F.err(e)); setBusy(false); }
   };
-  return <Form title="New request">
+  return <Form title="New request" fill>
     <div className="flex gap-2"><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} placeholder="Title" /><Pick text={type} value={type} options={TYPES.map((k) => [k, k])} onChange={setType} className="h-10" /></div>
-    <EmojiTextarea value={desc} maxLength={2000} onChange={setDesc} placeholder="Describe it. Markdown, links and :emoji: are supported." className="min-h-[180px]" />
-    <Button disabled={busy} onClick={submit}>Post</Button>
+    <EmojiTextarea value={desc} maxLength={2000} onChange={setDesc} placeholder="Describe it. Markdown, links and :emoji: are supported." fill />
+    <Button className="self-start" disabled={busy} onClick={submit}>Post</Button>
     <p className="text-xs text-muted-foreground">By posting you agree to the <a href="#rules" className="underline">community guidelines</a>.</p>
   </Form>;
 }
@@ -332,7 +332,7 @@ function EditPost({ id }: { id: string }) {
     if (!F.guard(me) || !title.trim() || !desc.trim()) return; setBusy(true);
     try { const b = F.writeBatch(F.db); b.update(p.ref, { title: title.trim(), description: desc.trim(), editedAt: F.serverTimestamp() }); F.audit(b, me, "edited", id); await b.commit(); go("#p-" + id); } catch (e) { toast.error(F.err(e)); setBusy(false); }
   };
-  return <Form title="Edit request"><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} /><EmojiTextarea value={desc} maxLength={2000} onChange={setDesc} className="min-h-[180px]" />
+  return <Form title="Edit request" fill><Input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} /><EmojiTextarea value={desc} maxLength={2000} onChange={setDesc} fill />
     <div className="flex gap-2"><Button disabled={busy} onClick={save}>Save</Button><Button variant="outline" onClick={() => history.back()}>Cancel</Button></div></Form>;
 }
 
